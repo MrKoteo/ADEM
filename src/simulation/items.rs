@@ -7,7 +7,7 @@
 use super::tile::ResourceKind;
 
 /// Число видов предметов (иконки UI, текстуры, массивы отображения).
-pub const ITEM_KIND_COUNT: usize = 19;
+pub const ITEM_KIND_COUNT: usize = 85;
 
 /// Вид предмета. Значения — стабильные идентификаторы (repr(u8));
 /// новые виды добавляются только в конец, чтобы не сдвигать существующие.
@@ -52,6 +52,138 @@ pub enum ItemKind {
     LeggingsChainmail,
     /// Кольчужные ботинки.
     BootsChainmail,
+    /// Кость (задел под костяные инструменты и оружие).
+    Bone,
+    /// Осколок кости.
+    ShardBone,
+    /// Оперение стрелы.
+    ArrowFletching,
+    /// Перо.
+    Feather,
+    /// Нить.
+    String,
+    /// Связка палок (8 палок, крафт и обратное развязывание).
+    StickBundle,
+    /// Книга (задел под передачу знаний).
+    Book,
+    /// Бумага.
+    Paper,
+    /// Бумажная масса (задел под крафт бумаги).
+    PaperPulp,
+    /// Комок глины.
+    ClayClod,
+    /// Сырой глиняный кирпич (задел под обжиг).
+    ClayBrickUnfired,
+    /// Обожжённый глиняный кирпич.
+    ClayBrickBaked,
+    /// Семена пшеницы.
+    WheatSeeds,
+    /// Пшеница.
+    Wheat,
+    /// Каменный молот.
+    HammerStone,
+    /// Медный самородок.
+    NuggetCopper,
+    /// Золотой самородок.
+    NuggetGold,
+    /// Серебряный самородок.
+    NuggetSilver,
+    /// Медный слиток.
+    IngotCopper,
+    /// Бронзовый слиток.
+    IngotBronze,
+    /// Оловянный слиток.
+    IngotTin,
+    /// Золотой слиток.
+    IngotGold,
+    /// Серебряный слиток.
+    IngotSilver,
+    /// Кварц.
+    GemQuartz,
+    /// Кремень.
+    GemFlint,
+    /// Изумруд.
+    GemEmerald,
+    /// Рубин.
+    GemRuby,
+    /// Бронзовый порошок.
+    DustBronze,
+    /// Угольный порошок.
+    DustCharcoal,
+    /// Медный порошок.
+    DustCopper,
+    /// Мука.
+    DustFlour,
+    /// Золотой порошок.
+    DustGold,
+    /// Пепел.
+    DustPitAsh,
+    /// Серебряный порошок.
+    DustSilver,
+    /// Сахар.
+    DustSugar,
+    /// Сера.
+    DustSulfur,
+    /// Оловянный порошок.
+    DustTin,
+    /// Опилки.
+    DustWoodChips,
+    /// Печёное яблоко (готовка на костре).
+    AppleBaked,
+    /// Морковь.
+    Carrot,
+    /// Печёная морковь (готовка на костре).
+    CarrotBaked,
+    /// Яйцо.
+    Egg,
+    /// Жареное яйцо (готовка на костре).
+    EggRoasted,
+    /// Сало.
+    Lard,
+    /// Сырое мясо птицы.
+    MeatBirdRaw,
+    /// Жареное мясо птицы (готовка на костре).
+    MeatBirdCooked,
+    /// Сырое мясо травоядного.
+    MeatHerbivoreRaw,
+    /// Жареное мясо травоядного (готовка на костре).
+    MeatHerbivoreCooked,
+    /// Сырое мясо хищника.
+    MeatPredatorRaw,
+    /// Жареное мясо хищника (готовка на костре).
+    MeatPredatorCooked,
+    /// Картофель.
+    Potato,
+    /// Печёный картофель (готовка на костре).
+    PotatoBaked,
+    /// Странный клубень (задел: добыча лопатой из травы/земли).
+    StrangeTuber,
+    /// Клубника.
+    Strawberries,
+    /// Медная руда.
+    RawCopper,
+    /// Золотая руда.
+    RawGold,
+    /// Серебряная руда.
+    RawSilver,
+    /// Оловянная руда.
+    RawTin,
+    /// Медный топор (крафтов пока нет).
+    AxeCopper,
+    /// Медный молот.
+    HammerCopper,
+    /// Медная мотыга.
+    HoeCopper,
+    /// Медная кирка.
+    PickaxeCopper,
+    /// Медная пила.
+    SawCopper,
+    /// Медные ножницы.
+    ShearsCopper,
+    /// Медная лопата.
+    ShovelCopper,
+    /// Медный серп.
+    SickleCopper,
 }
 
 impl ItemKind {
@@ -76,6 +208,72 @@ impl ItemKind {
         ItemKind::ChestplateChainmail,
         ItemKind::LeggingsChainmail,
         ItemKind::BootsChainmail,
+        ItemKind::Bone,
+        ItemKind::ShardBone,
+        ItemKind::ArrowFletching,
+        ItemKind::Feather,
+        ItemKind::String,
+        ItemKind::StickBundle,
+        ItemKind::Book,
+        ItemKind::Paper,
+        ItemKind::PaperPulp,
+        ItemKind::ClayClod,
+        ItemKind::ClayBrickUnfired,
+        ItemKind::ClayBrickBaked,
+        ItemKind::WheatSeeds,
+        ItemKind::Wheat,
+        ItemKind::HammerStone,
+        ItemKind::NuggetCopper,
+        ItemKind::NuggetGold,
+        ItemKind::NuggetSilver,
+        ItemKind::IngotCopper,
+        ItemKind::IngotBronze,
+        ItemKind::IngotTin,
+        ItemKind::IngotGold,
+        ItemKind::IngotSilver,
+        ItemKind::GemQuartz,
+        ItemKind::GemFlint,
+        ItemKind::GemEmerald,
+        ItemKind::GemRuby,
+        ItemKind::DustBronze,
+        ItemKind::DustCharcoal,
+        ItemKind::DustCopper,
+        ItemKind::DustFlour,
+        ItemKind::DustGold,
+        ItemKind::DustPitAsh,
+        ItemKind::DustSilver,
+        ItemKind::DustSugar,
+        ItemKind::DustSulfur,
+        ItemKind::DustTin,
+        ItemKind::DustWoodChips,
+        ItemKind::AppleBaked,
+        ItemKind::Carrot,
+        ItemKind::CarrotBaked,
+        ItemKind::Egg,
+        ItemKind::EggRoasted,
+        ItemKind::Lard,
+        ItemKind::MeatBirdRaw,
+        ItemKind::MeatBirdCooked,
+        ItemKind::MeatHerbivoreRaw,
+        ItemKind::MeatHerbivoreCooked,
+        ItemKind::MeatPredatorRaw,
+        ItemKind::MeatPredatorCooked,
+        ItemKind::Potato,
+        ItemKind::PotatoBaked,
+        ItemKind::StrangeTuber,
+        ItemKind::Strawberries,
+        ItemKind::RawCopper,
+        ItemKind::RawGold,
+        ItemKind::RawSilver,
+        ItemKind::RawTin,
+        ItemKind::AxeCopper,
+        ItemKind::HammerCopper,
+        ItemKind::HoeCopper,
+        ItemKind::PickaxeCopper,
+        ItemKind::SawCopper,
+        ItemKind::ShearsCopper,
+        ItemKind::ShovelCopper,
+        ItemKind::SickleCopper,
     ];
 
     /// Вид предмета по стабильному значению u8 (сохранения).
@@ -101,6 +299,72 @@ impl ItemKind {
             16 => Some(Self::ChestplateChainmail),
             17 => Some(Self::LeggingsChainmail),
             18 => Some(Self::BootsChainmail),
+            19 => Some(Self::Bone),
+            20 => Some(Self::ShardBone),
+            21 => Some(Self::ArrowFletching),
+            22 => Some(Self::Feather),
+            23 => Some(Self::String),
+            24 => Some(Self::StickBundle),
+            25 => Some(Self::Book),
+            26 => Some(Self::Paper),
+            27 => Some(Self::PaperPulp),
+            28 => Some(Self::ClayClod),
+            29 => Some(Self::ClayBrickUnfired),
+            30 => Some(Self::ClayBrickBaked),
+            31 => Some(Self::WheatSeeds),
+            32 => Some(Self::Wheat),
+            33 => Some(Self::HammerStone),
+            34 => Some(Self::NuggetCopper),
+            35 => Some(Self::NuggetGold),
+            36 => Some(Self::NuggetSilver),
+            37 => Some(Self::IngotCopper),
+            38 => Some(Self::IngotBronze),
+            39 => Some(Self::IngotTin),
+            40 => Some(Self::IngotGold),
+            41 => Some(Self::IngotSilver),
+            42 => Some(Self::GemQuartz),
+            43 => Some(Self::GemFlint),
+            44 => Some(Self::GemEmerald),
+            45 => Some(Self::GemRuby),
+            46 => Some(Self::DustBronze),
+            47 => Some(Self::DustCharcoal),
+            48 => Some(Self::DustCopper),
+            49 => Some(Self::DustFlour),
+            50 => Some(Self::DustGold),
+            51 => Some(Self::DustPitAsh),
+            52 => Some(Self::DustSilver),
+            53 => Some(Self::DustSugar),
+            54 => Some(Self::DustSulfur),
+            55 => Some(Self::DustTin),
+            56 => Some(Self::DustWoodChips),
+            57 => Some(Self::AppleBaked),
+            58 => Some(Self::Carrot),
+            59 => Some(Self::CarrotBaked),
+            60 => Some(Self::Egg),
+            61 => Some(Self::EggRoasted),
+            62 => Some(Self::Lard),
+            63 => Some(Self::MeatBirdRaw),
+            64 => Some(Self::MeatBirdCooked),
+            65 => Some(Self::MeatHerbivoreRaw),
+            66 => Some(Self::MeatHerbivoreCooked),
+            67 => Some(Self::MeatPredatorRaw),
+            68 => Some(Self::MeatPredatorCooked),
+            69 => Some(Self::Potato),
+            70 => Some(Self::PotatoBaked),
+            71 => Some(Self::StrangeTuber),
+            72 => Some(Self::Strawberries),
+            73 => Some(Self::RawCopper),
+            74 => Some(Self::RawGold),
+            75 => Some(Self::RawSilver),
+            76 => Some(Self::RawTin),
+            77 => Some(Self::AxeCopper),
+            78 => Some(Self::HammerCopper),
+            79 => Some(Self::HoeCopper),
+            80 => Some(Self::PickaxeCopper),
+            81 => Some(Self::SawCopper),
+            82 => Some(Self::ShearsCopper),
+            83 => Some(Self::ShovelCopper),
+            84 => Some(Self::SickleCopper),
             _ => None,
         }
     }
@@ -127,6 +391,72 @@ impl ItemKind {
             ItemKind::ChestplateChainmail => "chestplate_chainmail",
             ItemKind::LeggingsChainmail => "leggings_chainmail",
             ItemKind::BootsChainmail => "boots_chainmail",
+            ItemKind::Bone => "bone",
+            ItemKind::ShardBone => "shard_bone",
+            ItemKind::ArrowFletching => "arrow_fletching",
+            ItemKind::Feather => "feather",
+            ItemKind::String => "string",
+            ItemKind::StickBundle => "stick_bundle",
+            ItemKind::Book => "book",
+            ItemKind::Paper => "paper",
+            ItemKind::PaperPulp => "paper_pulp",
+            ItemKind::ClayClod => "clod_clay",
+            ItemKind::ClayBrickUnfired => "brick_clay_unfired",
+            ItemKind::ClayBrickBaked => "brick_clay_baked",
+            ItemKind::WheatSeeds => "seeds_wheat",
+            ItemKind::Wheat => "wheat",
+            ItemKind::HammerStone => "hammer_stone",
+            ItemKind::NuggetCopper => "nugget_copper",
+            ItemKind::NuggetGold => "nugget_gold",
+            ItemKind::NuggetSilver => "nugget_silver",
+            ItemKind::IngotCopper => "ingot_copper",
+            ItemKind::IngotBronze => "ingot_bronze",
+            ItemKind::IngotTin => "ingot_tin",
+            ItemKind::IngotGold => "ingot_gold",
+            ItemKind::IngotSilver => "ingot_silver",
+            ItemKind::GemQuartz => "gem_quartz",
+            ItemKind::GemFlint => "gem_flint",
+            ItemKind::GemEmerald => "gem_emerald",
+            ItemKind::GemRuby => "gem_ruby",
+            ItemKind::DustBronze => "dust_bronze",
+            ItemKind::DustCharcoal => "dust_charcoal",
+            ItemKind::DustCopper => "dust_copper",
+            ItemKind::DustFlour => "dust_flour",
+            ItemKind::DustGold => "dust_gold",
+            ItemKind::DustPitAsh => "dust_pit_ash",
+            ItemKind::DustSilver => "dust_silver",
+            ItemKind::DustSugar => "dust_sugar",
+            ItemKind::DustSulfur => "dust_sulfur",
+            ItemKind::DustTin => "dust_tin",
+            ItemKind::DustWoodChips => "dust_wood_chips",
+            ItemKind::AppleBaked => "apple_baked",
+            ItemKind::Carrot => "carrot",
+            ItemKind::CarrotBaked => "carrot_baked",
+            ItemKind::Egg => "egg",
+            ItemKind::EggRoasted => "egg_roasted",
+            ItemKind::Lard => "lard",
+            ItemKind::MeatBirdRaw => "meat_bird_raw",
+            ItemKind::MeatBirdCooked => "meat_bird_cooked",
+            ItemKind::MeatHerbivoreRaw => "meat_herbivore_raw",
+            ItemKind::MeatHerbivoreCooked => "meat_herbivore_cooked",
+            ItemKind::MeatPredatorRaw => "meat_predator_raw",
+            ItemKind::MeatPredatorCooked => "meat_predator_cooked",
+            ItemKind::Potato => "potato",
+            ItemKind::PotatoBaked => "potato_baked",
+            ItemKind::StrangeTuber => "strange_tuber",
+            ItemKind::Strawberries => "strawberries",
+            ItemKind::RawCopper => "raw_copper",
+            ItemKind::RawGold => "raw_gold",
+            ItemKind::RawSilver => "raw_silver",
+            ItemKind::RawTin => "raw_tin",
+            ItemKind::AxeCopper => "axe_copper",
+            ItemKind::HammerCopper => "hammer_copper",
+            ItemKind::HoeCopper => "hoe_copper",
+            ItemKind::PickaxeCopper => "pickaxe_copper",
+            ItemKind::SawCopper => "saw_copper",
+            ItemKind::ShearsCopper => "shears_copper",
+            ItemKind::ShovelCopper => "shovel_copper",
+            ItemKind::SickleCopper => "sickle_copper",
         }
     }
 
@@ -165,7 +495,73 @@ impl ItemKind {
             | ItemKind::Knife
             | ItemKind::FishingRod
             | ItemKind::Arrow
-            | ItemKind::Bow => ItemClass::Misc,
+            | ItemKind::Bow
+            | ItemKind::Bone
+            | ItemKind::ShardBone
+            | ItemKind::ArrowFletching
+            | ItemKind::Feather
+            | ItemKind::String
+            | ItemKind::StickBundle
+            | ItemKind::Book
+            | ItemKind::Paper
+            | ItemKind::PaperPulp
+            | ItemKind::ClayClod
+            | ItemKind::ClayBrickUnfired
+            | ItemKind::ClayBrickBaked
+            | ItemKind::WheatSeeds
+            | ItemKind::Wheat
+            | ItemKind::HammerStone
+            | ItemKind::NuggetCopper
+            | ItemKind::NuggetGold
+            | ItemKind::NuggetSilver
+            | ItemKind::IngotCopper
+            | ItemKind::IngotBronze
+            | ItemKind::IngotTin
+            | ItemKind::IngotGold
+            | ItemKind::IngotSilver
+            | ItemKind::GemQuartz
+            | ItemKind::GemFlint
+            | ItemKind::GemEmerald
+            | ItemKind::GemRuby
+            | ItemKind::DustBronze
+            | ItemKind::DustCharcoal
+            | ItemKind::DustCopper
+            | ItemKind::DustFlour
+            | ItemKind::DustGold
+            | ItemKind::DustPitAsh
+            | ItemKind::DustSilver
+            | ItemKind::DustSugar
+            | ItemKind::DustSulfur
+            | ItemKind::DustTin
+            | ItemKind::DustWoodChips
+            | ItemKind::AppleBaked
+            | ItemKind::Carrot
+            | ItemKind::CarrotBaked
+            | ItemKind::Egg
+            | ItemKind::EggRoasted
+            | ItemKind::Lard
+            | ItemKind::MeatBirdRaw
+            | ItemKind::MeatBirdCooked
+            | ItemKind::MeatHerbivoreRaw
+            | ItemKind::MeatHerbivoreCooked
+            | ItemKind::MeatPredatorRaw
+            | ItemKind::MeatPredatorCooked
+            | ItemKind::Potato
+            | ItemKind::PotatoBaked
+            | ItemKind::StrangeTuber
+            | ItemKind::Strawberries
+            | ItemKind::RawCopper
+            | ItemKind::RawGold
+            | ItemKind::RawSilver
+            | ItemKind::RawTin
+            | ItemKind::AxeCopper
+            | ItemKind::HammerCopper
+            | ItemKind::HoeCopper
+            | ItemKind::PickaxeCopper
+            | ItemKind::SawCopper
+            | ItemKind::ShearsCopper
+            | ItemKind::ShovelCopper
+            | ItemKind::SickleCopper => ItemClass::Misc,
             ItemKind::HelmetChainmail => ItemClass::Armor(BodySlot::Head),
             ItemKind::ChestplateChainmail => ItemClass::Armor(BodySlot::Chest),
             ItemKind::LeggingsChainmail => ItemClass::Armor(BodySlot::Legs),
@@ -190,14 +586,80 @@ impl ItemKind {
             | ItemKind::HelmetChainmail
             | ItemKind::ChestplateChainmail
             | ItemKind::LeggingsChainmail
-            | ItemKind::BootsChainmail => 1,
+            | ItemKind::BootsChainmail
+            | ItemKind::HammerStone
+            | ItemKind::AxeCopper
+            | ItemKind::HammerCopper
+            | ItemKind::HoeCopper
+            | ItemKind::PickaxeCopper
+            | ItemKind::SawCopper
+            | ItemKind::ShearsCopper
+            | ItemKind::ShovelCopper
+            | ItemKind::SickleCopper => 1,
             ItemKind::Stick
             | ItemKind::Rock
             | ItemKind::Apple
             | ItemKind::GrassBunch
             | ItemKind::PlantFiber
             | ItemKind::Cordage
-            | ItemKind::Arrow => MAX_STACK,
+            | ItemKind::Arrow
+            | ItemKind::Bone
+            | ItemKind::ShardBone
+            | ItemKind::ArrowFletching
+            | ItemKind::Feather
+            | ItemKind::String
+            | ItemKind::StickBundle
+            | ItemKind::Book
+            | ItemKind::Paper
+            | ItemKind::PaperPulp
+            | ItemKind::ClayClod
+            | ItemKind::ClayBrickUnfired
+            | ItemKind::ClayBrickBaked
+            | ItemKind::WheatSeeds
+            | ItemKind::Wheat
+            | ItemKind::NuggetCopper
+            | ItemKind::NuggetGold
+            | ItemKind::NuggetSilver
+            | ItemKind::IngotCopper
+            | ItemKind::IngotBronze
+            | ItemKind::IngotTin
+            | ItemKind::IngotGold
+            | ItemKind::IngotSilver
+            | ItemKind::GemQuartz
+            | ItemKind::GemFlint
+            | ItemKind::GemEmerald
+            | ItemKind::GemRuby
+            | ItemKind::DustBronze
+            | ItemKind::DustCharcoal
+            | ItemKind::DustCopper
+            | ItemKind::DustFlour
+            | ItemKind::DustGold
+            | ItemKind::DustPitAsh
+            | ItemKind::DustSilver
+            | ItemKind::DustSugar
+            | ItemKind::DustSulfur
+            | ItemKind::DustTin
+            | ItemKind::DustWoodChips
+            | ItemKind::AppleBaked
+            | ItemKind::Carrot
+            | ItemKind::CarrotBaked
+            | ItemKind::Egg
+            | ItemKind::EggRoasted
+            | ItemKind::Lard
+            | ItemKind::MeatBirdRaw
+            | ItemKind::MeatBirdCooked
+            | ItemKind::MeatHerbivoreRaw
+            | ItemKind::MeatHerbivoreCooked
+            | ItemKind::MeatPredatorRaw
+            | ItemKind::MeatPredatorCooked
+            | ItemKind::Potato
+            | ItemKind::PotatoBaked
+            | ItemKind::StrangeTuber
+            | ItemKind::Strawberries
+            | ItemKind::RawCopper
+            | ItemKind::RawGold
+            | ItemKind::RawSilver
+            | ItemKind::RawTin => MAX_STACK,
         }
     }
 

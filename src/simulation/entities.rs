@@ -15,6 +15,7 @@ use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng}; // Bevy 0.20 / rand 0.10: RngExt вместо Rng
 
 use super::chunk::Chunk;
+use super::movement;
 use super::player::WorldPos;
 use super::tile::TileType;
 use super::time::TICKS_PER_SEC;
@@ -25,8 +26,10 @@ use super::world::{World, split_tile, TilePos};
 /// может постепенно мигрировать по карте, не будучи привязанным к месту.
 const WANDER_RADIUS_TILES: f32 = 8.0;
 
-/// Скорость ходьбы существ, тайлов за тик (GAME_DESIGN 3.4).
-const WALK_SPEED: f32 = 0.2;
+/// Базовая скорость ходьбы волка, тайлов за тик (GAME_DESIGN 3.4).
+/// Скорость задаётся отдельно для каждого вида, а модификаторы рельефа —
+/// общие правила мира (`simulation/movement.rs`).
+const WOLF_WALK_SPEED: f32 = 0.2;
 
 /// Длительности состояний, реальные секунды при x1.
 const WALK_SECS: (u64, u64) = (3, 8);
@@ -84,10 +87,11 @@ impl EntityKind {
         }
     }
 
-    /// Скорость ходьбы вида, тайлов за тик.
+    /// Базовая скорость ходьбы вида, тайлов за тик. Замедление рельефом
+    /// сюда не входит — его применяет `movement::effective_walk_speed`.
     pub fn walk_speed(self) -> f32 {
         match self {
-            EntityKind::Wolf => WALK_SPEED,
+            EntityKind::Wolf => WOLF_WALK_SPEED,
         }
     }
 
@@ -193,6 +197,13 @@ impl SimEntity {
             stuck_ticks: 0,
             land_search_failed_at: 0,
         }
+    }
+
+    /// Базовая скорость ходьбы существа, тайлов за тик. Единая точка, через
+    /// которую движение берёт скорость конкретной особи: позже сюда
+    /// добавятся травмы, груз и прочие индивидуальные модификаторы.
+    pub fn walk_speed(&self) -> f32 {
+        self.kind.walk_speed()
     }
 
     /// Кадр анимации ходьбы: 0 или 1, смена раз в `WALK_FRAME_TICKS`.
@@ -436,10 +447,16 @@ fn enter_escape(entity: &mut SimEntity, terrain: &TerrainView<'_>, tick: u64) ->
     let dx = target.x - entity.pos.x;
     let dy = target.y - entity.pos.y;
     let distance = (dx * dx + dy * dy).sqrt();
+    // Оценка пути — по собственной скорости существа с учётом рельефа
+    // под ним, чтобы длительность не закончилась раньше берега.
+    let speed = movement::effective_walk_speed(
+        entity.walk_speed(),
+        terrain.terrain_at(entity.pos),
+    );
     entity.state = EntityState::Walking;
     entity.state_ticks = 0;
     entity.state_duration =
-        (distance / WALK_SPEED).ceil() as u64 + TICKS_PER_SEC as u64;
+        (distance / speed).ceil() as u64 + TICKS_PER_SEC as u64;
     entity.target = target;
     entity.stuck_ticks = 0;
     true
@@ -505,7 +522,12 @@ fn step_towards(entity: &mut SimEntity, terrain: &TerrainView<'_>, side: f32) ->
         entity.facing = if dx > 0.0 { Facing::Right } else { Facing::Left };
     }
 
-    let speed = entity.kind.walk_speed();
+    // Скорость — собственная скорость существа; замедление рельефом —
+    // общее правило мира, как у игрока.
+    let speed = movement::effective_walk_speed(
+        entity.walk_speed(),
+        terrain.terrain_at(entity.pos),
+    );
     let step = speed.min(distance);
     let next_x = entity.pos.x + dx / distance * step;
     let next_y = entity.pos.y + dy / distance * step;

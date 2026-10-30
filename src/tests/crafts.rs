@@ -156,7 +156,7 @@ fn craft_book_loads_all_recipe_files() {
 
     let (book, errors) = CraftBook::load_dir("data/crafts");
     assert!(errors.is_empty(), "ошибки рецептов: {errors:?}");
-    assert_eq!(book.recipes.len(), 12);
+    assert_eq!(book.recipes.len(), 14);
 
     let mut ids: Vec<&str> = book.recipes.iter().map(|recipe| recipe.id.as_str()).collect();
     ids.sort_unstable();
@@ -175,6 +175,8 @@ fn craft_book_loads_all_recipe_files() {
             "plant_fiber",
             "shovel",
             "spear",
+            "stick_bundle",
+            "stick_bundle_unpack",
         ]
     );
     assert!(book.recipes.iter().all(|recipe| recipe.category == MANUAL_CATEGORY));
@@ -183,4 +185,33 @@ fn craft_book_loads_all_recipe_files() {
             .iter()
             .any(|recipe| recipe.result.kind == ItemKind::FishingRod)
     );
+}
+
+/// Связка палок: 8 палок → связка и обратно, оба рецепта ручные.
+#[test]
+fn stick_bundle_recipe_is_bidirectional() {
+    use crate::simulation::crafts::{CraftBook, GRID_SLOTS};
+    use crate::simulation::items::{Inventory, ItemKind};
+    use crate::simulation::ItemStack;
+
+    let (book, errors) = CraftBook::load_dir("data/crafts");
+    assert!(errors.is_empty(), "ошибки рецептов: {errors:?}");
+
+    let mut grid: [Option<ItemStack>; GRID_SLOTS] = [None; GRID_SLOTS];
+    grid[0] = Some(ItemStack { kind: ItemKind::Stick, count: 8 });
+    let pack = book.matching_recipe(&grid).expect("8 палок должны давать связку");
+    assert_eq!(pack.result, ItemStack { kind: ItemKind::StickBundle, count: 1 });
+
+    let mut inventory = Inventory::default();
+    assert!(pack.try_craft_one(&mut grid, &mut inventory));
+    assert_eq!(inventory.count_of(ItemKind::StickBundle), 1);
+
+    grid[0] = Some(ItemStack { kind: ItemKind::StickBundle, count: 1 });
+    let unpack = book.matching_recipe(&grid).expect("связка должна развязываться");
+    assert_eq!(unpack.result, ItemStack { kind: ItemKind::Stick, count: 8 });
+
+    let mut inventory = Inventory::default();
+    assert!(unpack.try_craft_one(&mut grid, &mut inventory));
+    assert_eq!(inventory.count_of(ItemKind::Stick), 8);
+    assert_eq!(inventory.count_of(ItemKind::StickBundle), 0);
 }

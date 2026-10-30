@@ -1,0 +1,9 @@
+{
+  "id": "stick_bundle_unpack",
+  "category": "manual",
+  "shapeless": true,
+  "ingredients": [
+    { "item": "stick_bundle", "count": 1 }
+  ],
+  "result": { "item": "stick", "count": 8 }
+}

@@ -8,18 +8,16 @@
 
 use super::hunger::{Activity, Hunger, APPLE_FOOD_VALUE};
 use super::items::{Inventory, ItemKind, ItemStack, MISC_SLOTS};
+use super::movement;
 use super::objects::{ObjectKind, WorldObject};
 use super::tile::TileType;
 use super::world::{TilePos, World};
 
-/// Скорость ходьбы, тайлов за тик (GAME_DESIGN 3.4: 0.2 тайла/тик).
-const WALK_SPEED: f32 = 0.2;
-
-/// Замедление на мелководье: движение вплавь втрое медленнее.
-const WADE_SLOWDOWN: f32 = 3.0;
-
-/// Замедление на горе: подъём вдвое медленнее.
-const MOUNTAIN_SLOWDOWN: f32 = 2.0;
+/// Базовая скорость ходьбы игрока, тайлов за тик (GAME_DESIGN 3.4:
+/// 0.2 тайла/тик). Скорость — параметр конкретного существа: у NPC она
+/// задаётся видом (`EntityKind::walk_speed`), модификаторы рельефа —
+/// общие правила мира (`simulation/movement.rs`).
+pub const PLAYER_WALK_SPEED: f32 = 0.2;
 
 /// Радиус взаимодействия с тайлом: от игрока до центра тайла, в тайлах.
 pub const INTERACT_REACH: f32 = 2.0;
@@ -165,8 +163,9 @@ impl Player {
     /// недоступны (иначе вплавь уходил бы через любую глубину). Исключение
     /// — игрок, уже стоящий в глубине (размещённый «богом» на океане):
     /// ему движение разрешено, чтобы он мог выбраться на берег.
-    /// Скорость зависит от тайла под ногами: по мелководью — втрое
-    /// медленнее, по горе — вдвое.
+    /// Скорость зависит от тайла под ногами — по общим правилам мира
+    /// (`simulation/movement.rs`): по мелководью втрое медленнее, по горе
+    /// вдвое, как и у остальных существ.
     pub fn step(&mut self, dir: (f32, f32), world: &World) {
         let len = (dir.0 * dir.0 + dir.1 * dir.1).sqrt();
         if len <= f32::EPSILON {
@@ -182,12 +181,10 @@ impl Player {
             Self::terrain_at(self.pos, world),
             Some(TileType::DeepWater | TileType::Ocean)
         );
-        let slowdown = match Self::terrain_at(self.pos, world) {
-            Some(TileType::Water) => WADE_SLOWDOWN,
-            Some(TileType::Mountain) => MOUNTAIN_SLOWDOWN,
-            _ => 1.0,
-        };
-        let speed = WALK_SPEED / slowdown;
+        let speed = movement::effective_walk_speed(
+            PLAYER_WALK_SPEED,
+            Self::terrain_at(self.pos, world),
+        );
         let dx = dir.0 / len * speed;
         let dy = dir.1 / len * speed;
 

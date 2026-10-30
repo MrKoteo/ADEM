@@ -190,6 +190,24 @@ fn player_wades_shallow_water_only_and_slower() {
     }
 }
 
+/// Гора — общее правило мира: игрок замедляется вдвое так же, как существа.
+#[test]
+fn player_mountain_slows_down() {
+    use crate::simulation::player::{Player, WorldPos};
+
+    let mut world = World::new(WorldSize::new(256), 1);
+    let mountain = TilePos { x: 50, y: 50 };
+    world.set_terrain(mountain, TileType::Mountain);
+
+    let mut p = Player::new(WorldPos::of_tile_center(mountain));
+    p.step((1.0, 0.0), &world);
+    assert!(
+        (p.pos.x - 50.6).abs() < 1e-4,
+        "на горе шаг должен быть вдвое короче, x = {}",
+        p.pos.x
+    );
+}
+
 /// Вброд в глубину не уйти: стоя на мелководье, игрок не может войти
 /// в средневодную или океан; с глубины (размещён «богом») можно выбраться
 /// на берег.
@@ -853,4 +871,23 @@ fn grass_gathering_yields_one_and_leaves_dirt() {
     });
     assert!(player.interact(blocked, &mut world));
     assert_eq!(world.terrain_kind(blocked), TileType::Dirt);
+}
+
+/// Реестр предметов: дискриминанты совпадают с порядком `ALL`, строковые id
+/// уникальны, а обратные преобразования (`from_id`, `from_discriminant`)
+/// возвращают тот же вид. Проверка ловит рассинхрон массивов иконок/текстур.
+#[test]
+fn item_registry_is_consistent() {
+    use crate::simulation::items::{ItemKind, ITEM_KIND_COUNT};
+    use std::collections::HashSet;
+
+    assert_eq!(ItemKind::ALL.len(), ITEM_KIND_COUNT);
+    let mut ids = HashSet::new();
+    for (index, kind) in ItemKind::ALL.into_iter().enumerate() {
+        assert_eq!(kind as usize, index, "дискриминант {kind:?} не совпадает с ALL");
+        assert!(ids.insert(kind.id()), "дубликат строкового id: {}", kind.id());
+        assert_eq!(ItemKind::from_id(kind.id()), Some(kind));
+        assert_eq!(ItemKind::from_discriminant(kind as u8), Some(kind));
+    }
+    assert_eq!(ItemKind::from_discriminant(ITEM_KIND_COUNT as u8), None);
 }

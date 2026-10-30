@@ -298,3 +298,56 @@ fn wolf_water_panic_retargets_nearest_land() {
     assert!(!world.terrain_kind(target).is_water(), "цель должна быть на суше");
     assert_eq!(wolf.state, EntityState::Walking, "волк должен плыть к берегу");
 }
+
+/// Модификаторы рельефа — общие правила мира: существа замедляются на горе
+/// вдвое и на мелководье втрое, как и игрок.
+#[test]
+fn wolf_slows_down_on_mountain_and_in_shallow_water() {
+    use crate::simulation::entities::{EntityKind, EntityState};
+    use crate::simulation::player::WorldPos;
+
+    // Гора: шаг 0.2 / MOUNTAIN_SLOWDOWN = 0.1 тайла за тик.
+    let mut world = World::new(WorldSize::new(256), 1);
+    let mountain = TilePos { x: 100, y: 100 };
+    world.set_terrain(mountain, TileType::Mountain);
+    world
+        .entities
+        .spawn(EntityKind::Wolf, WorldPos::of_tile_center(mountain));
+    {
+        let wolf = &mut world.entities.entities[0];
+        wolf.state = EntityState::Walking;
+        wolf.state_ticks = 0;
+        wolf.state_duration = 1000;
+        wolf.target = WorldPos { x: 110.5, y: 100.5 };
+    }
+    world.tick_entities(1);
+    let wolf = &world.entities.entities[0];
+    assert!(
+        (wolf.pos.x - 100.6).abs() < 1e-5,
+        "на горе шаг должен быть вдвое короче, x = {}",
+        wolf.pos.x
+    );
+
+    // Мелководье: шаг 0.2 / WADE_SLOWDOWN ≈ 0.0667 тайла за тик.
+    let mut world = World::new(WorldSize::new(256), 1);
+    let water = TilePos { x: 100, y: 110 };
+    world.set_terrain(water, TileType::Water);
+    world
+        .entities
+        .spawn(EntityKind::Wolf, WorldPos::of_tile_center(water));
+    {
+        let wolf = &mut world.entities.entities[0];
+        wolf.state = EntityState::Walking;
+        wolf.state_ticks = 0;
+        wolf.state_duration = 1000;
+        wolf.target = WorldPos { x: 110.5, y: 110.5 };
+    }
+    world.tick_entities(1);
+    let wolf = &world.entities.entities[0];
+    let expected = 100.5 + 0.2 / 3.0;
+    assert!(
+        (wolf.pos.x - expected).abs() < 1e-5,
+        "вброд шаг должен быть втрое короче, x = {}",
+        wolf.pos.x
+    );
+}

@@ -11,6 +11,7 @@ pub mod entities;
 pub mod generation;
 pub mod hunger;
 pub mod items;
+pub mod movement;
 pub mod needs;
 pub mod objects;
 pub mod player;
