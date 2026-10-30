@@ -1,0 +1,101 @@
+{
+  "institutions": [
+    {
+      "id": "primitive_language",
+      "name": "Примитивный язык",
+      "era": "stone_age",
+      "requires": [],
+      "description": "Простые звуки и жесты для координации действий."
+    },
+    {
+      "id": "family_group",
+      "name": "Семейная группа",
+      "era": "stone_age",
+      "requires": [
+        "primitive_language"
+      ],
+      "description": "Устойчивые пары и забота о потомстве."
+    },
+    {
+      "id": "food_sharing",
+      "name": "Раздел добычи",
+      "era": "stone_age",
+      "requires": [
+        "family_group"
+      ],
+      "description": "Нормы дележа: удача охотника кормит всю общину."
+    },
+    {
+      "id": "tribal_council",
+      "name": "Племенной совет",
+      "era": "stone_age",
+      "requires": [
+        "food_sharing"
+      ],
+      "description": "Совместное решение спорных вопросов старейшинами."
+    },
+    {
+      "id": "taboo_system",
+      "name": "Система табу",
+      "era": "stone_age",
+      "requires": [
+        "tribal_council"
+      ],
+      "description": "Запреты удерживают общину от внутренних конфликтов."
+    },
+    {
+      "id": "burial_rites",
+      "name": "Погребальные обряды",
+      "era": "stone_age",
+      "requires": [
+        "taboo_system"
+      ],
+      "description": "Первые ритуалы прощания с умершими."
+    },
+    {
+      "id": "shamanism",
+      "name": "Шаманизм",
+      "era": "stone_age",
+      "requires": [
+        "burial_rites"
+      ],
+      "description": "Выделение посредников между племенем и природой."
+    },
+    {
+      "id": "trade_customs",
+      "name": "Обычаи обмена",
+      "era": "stone_age",
+      "requires": [
+        "shamanism"
+      ],
+      "description": "Нормы обмена ресурсами с соседними группами."
+    },
+    {
+      "id": "oral_tradition",
+      "name": "Устная традиция",
+      "era": "stone_age",
+      "requires": [
+        "primitive_language"
+      ],
+      "description": "Сказания и счёт поколений живут в памяти старших."
+    },
+    {
+      "id": "kinship_rules",
+      "name": "Правила родства",
+      "era": "stone_age",
+      "requires": [
+        "family_group"
+      ],
+      "description": "Кто кому брат, кто сват — порядок браков и наследования."
+    },
+    {
+      "id": "initiation_rites",
+      "name": "Обряды посвящения",
+      "era": "stone_age",
+      "requires": [
+        "taboo_system"
+      ],
+      "description": "Испытание переводит ребёнка во взрослого члена племени."
+    }
+  ]
+}

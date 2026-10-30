@@ -1,0 +1,128 @@
+{
+  "technologies": [
+    {
+      "id": "stone_knapping",
+      "name": "Расщепление камня",
+      "era": "stone_age",
+      "requires": [],
+      "description": "Примитивная обработка камня: отщепы и острые края."
+    },
+    {
+      "id": "stone_tools",
+      "name": "Каменные орудия",
+      "era": "stone_age",
+      "requires": [
+        "stone_knapping"
+      ],
+      "description": "Рубила, скребки и ножи — основа выживания."
+    },
+    {
+      "id": "wood_working",
+      "name": "Обработка дерева",
+      "era": "stone_age",
+      "requires": [
+        "stone_tools"
+      ],
+      "description": "Палки, жерди и брёвна как материал и топливо."
+    },
+    {
+      "id": "cordage",
+      "name": "Плетение верёвок",
+      "era": "stone_age",
+      "requires": [
+        "wood_working"
+      ],
+      "description": "Травяное волокно скручивается в прочную верёвку."
+    },
+    {
+      "id": "fire_control",
+      "name": "Контроль огня",
+      "era": "stone_age",
+      "requires": [
+        "cordage"
+      ],
+      "description": "Добыча и поддержание огня: тепло, защита, очаг."
+    },
+    {
+      "id": "food_drying",
+      "name": "Вяление и копчение",
+      "era": "stone_age",
+      "requires": [
+        "fire_control"
+      ],
+      "description": "Запасы мяса и рыбы перестают портиться за дни."
+    },
+    {
+      "id": "bone_working",
+      "name": "Костяное дело",
+      "era": "stone_age",
+      "requires": [
+        "food_drying"
+      ],
+      "description": "Кости и рога — иглы, шилья и наконечники."
+    },
+    {
+      "id": "pottery",
+      "name": "Гончарное дело",
+      "era": "stone_age",
+      "requires": [
+        "bone_working"
+      ],
+      "description": "Лепка и обжиг глиняной посуды для хранения и варки."
+    },
+    {
+      "id": "simple_hunting",
+      "name": "Охота",
+      "era": "stone_age",
+      "requires": [
+        "pottery"
+      ],
+      "description": "Копья и ловушки для добычи мяса и шкур."
+    },
+    {
+      "id": "basic_building",
+      "name": "Простое строительство",
+      "era": "stone_age",
+      "requires": [
+        "simple_hunting"
+      ],
+      "description": "Навесы, хижины и укрытия из подручных материалов."
+    },
+    {
+      "id": "hide_processing",
+      "name": "Обработка шкур",
+      "era": "stone_age",
+      "requires": [
+        "stone_tools"
+      ],
+      "description": "Шкуры выделываются в одежду и укрытия — защита от непогоды."
+    },
+    {
+      "id": "basket_weaving",
+      "name": "Плетение корзин",
+      "era": "stone_age",
+      "requires": [
+        "cordage"
+      ],
+      "description": "Прутья и волокно — ёмкость для переноски и хранения."
+    },
+    {
+      "id": "net_fishing",
+      "name": "Сети и рыболовство",
+      "era": "stone_age",
+      "requires": [
+        "basket_weaving"
+      ],
+      "description": "Сети и верши дают рыбу без погони за дичью."
+    },
+    {
+      "id": "sling",
+      "name": "Праща",
+      "era": "stone_age",
+      "requires": [
+        "simple_hunting"
+      ],
+      "description": "Кожаная петля бьёт камнем дальше руки."
+    }
+  ]
+}

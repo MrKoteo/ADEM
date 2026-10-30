@@ -1,0 +1,10 @@
+{
+  "id": "hoe",
+  "category": "manual",
+  "grid": [
+    ["rock", "rock", null],
+    [null, "stick", null],
+    [null, "stick", "cordage"]
+  ],
+  "result": { "item": "hoe", "count": 1 }
+}

@@ -1,0 +1,130 @@
+{
+  "technologies": [
+    {
+      "id": "copper_smelting",
+      "name": "Выплавка меди",
+      "era": "bronze_age",
+      "requires": [
+        "basic_building"
+      ],
+      "description": "Руда плавится в печи: первый металл в руках людей."
+    },
+    {
+      "id": "bronze_alloying",
+      "name": "Бронзолитейное дело",
+      "era": "bronze_age",
+      "requires": [
+        "copper_smelting"
+      ],
+      "description": "Сплав меди с оловом прочнее камня и держит лезвие."
+    },
+    {
+      "id": "deep_mining",
+      "name": "Горное дело",
+      "era": "bronze_age",
+      "requires": [
+        "bronze_alloying"
+      ],
+      "description": "Штольни и крепи: руда добывается из-под земли."
+    },
+    {
+      "id": "ox_plow",
+      "name": "Пашенное земледелие",
+      "era": "bronze_age",
+      "requires": [
+        "deep_mining"
+      ],
+      "description": "Упряжка и плуг превращают целину в пашню."
+    },
+    {
+      "id": "irrigation",
+      "name": "Ирригация",
+      "era": "bronze_age",
+      "requires": [
+        "ox_plow"
+      ],
+      "description": "Каналы и шлюзы уводят воду на поля."
+    },
+    {
+      "id": "pottery_wheel",
+      "name": "Гончарный круг",
+      "era": "bronze_age",
+      "requires": [
+        "irrigation"
+      ],
+      "description": "Сосуды становятся ровными, тонкими и быстрыми в работе."
+    },
+    {
+      "id": "loom",
+      "name": "Ткацкий станок",
+      "era": "bronze_age",
+      "requires": [
+        "pottery_wheel"
+      ],
+      "description": "Волокно превращается в ткань вместо шкур."
+    },
+    {
+      "id": "pictograph_writing",
+      "name": "Пиктографическая запись",
+      "era": "bronze_age",
+      "requires": [
+        "loom"
+      ],
+      "description": "Учёт урожая и стад на глиняных табличках."
+    },
+    {
+      "id": "bronze_armor",
+      "name": "Бронзовые доспехи",
+      "era": "bronze_age",
+      "requires": [
+        "pictograph_writing"
+      ],
+      "description": "Пластины и шлемы закрывают воина целиком."
+    },
+    {
+      "id": "wheel",
+      "name": "Колесо",
+      "era": "bronze_age",
+      "requires": [
+        "bronze_armor"
+      ],
+      "description": "Телега и гончарный круг двигают грузы и ремесло."
+    },
+    {
+      "id": "weights_measures",
+      "name": "Меры и весы",
+      "era": "bronze_age",
+      "requires": [
+        "bronze_alloying"
+      ],
+      "description": "Гири и эталоны — честный обмен и учёт запасов."
+    },
+    {
+      "id": "lost_wax_casting",
+      "name": "Литьё по восковой модели",
+      "era": "bronze_age",
+      "requires": [
+        "bronze_alloying"
+      ],
+      "description": "Сложные отливки: украшения, наконечники, детали механизмов."
+    },
+    {
+      "id": "water_lift",
+      "name": "Водоподъёмное колесо",
+      "era": "bronze_age",
+      "requires": [
+        "irrigation"
+      ],
+      "description": "Механический подъём воды орошает поля выше русла."
+    },
+    {
+      "id": "beer_brewing",
+      "name": "Варка пива",
+      "era": "bronze_age",
+      "requires": [
+        "pottery_wheel"
+      ],
+      "description": "Ячмень и глиняные сосуды — напиток и плата работникам."
+    }
+  ]
+}

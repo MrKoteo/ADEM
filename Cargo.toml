@@ -1,0 +1,57 @@
+[package]
+name = "ADEM"
+version = "0.2.0"
+edition = "2024"
+
+
+[build-dependencies]
+winresource = "0.1.34"
+
+[dependencies]
+# system_clipboard включает обмен с буфером ОС (arboard) вместо
+# внутреннего буфера процесса: без него Ctrl+C/Ctrl+V работали бы только внутри игры. Крейты уже в lock-файле.
+bevy = { version = "0.20.0", default-features = false, features = ["2d", "ui", "audio", "system_clipboard", "bevy_anti_alias", "smaa_luts", "zstd_rust", "sysinfo_plugin"] }
+# Форматы декодера bevy_audio (rodio/symphonia).
+# Без нужной фичи звук падает НЕ на загрузке, а на воспроизведении.
+bevy_audio = { version = "0.20.0", default-features = false, features = ["mp3", "wav", "vorbis"] }
+
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+# Версия та же, что тянет bevy 0.20 через bevy_winit: нужна для прямой
+# установки иконки окна (в bevy поле Window::icon удалено).
+# Features как у bevy_winit (rwh_06), дефолтные x11/wayland не нужны;
+# на Windows их зависимости всё равно target-gated, так что это чисто гигиена.
+winit = { version = "0.30.13", default-features = false, features = ["rwh_06"] }
+serde = { version = "1.0.229", default-features = false, features = ["derive"] }
+serde_json = "1.0.154"
+rand = "0.10.3"
+
+[dev-dependencies]
+# Только для теста, проверяющего синтаксис шейдера.
+# Версия та же, что тянет bevy 0.20 через wgpu.
+naga = { version = "30.0.1", default-features = false, features = ["wgsl-in"] }
+
+[lints.clippy]
+type_complexity = "allow"
+too_many_arguments = "allow"
+
+
+
+
+
+[profile.dev]
+opt-level = 1
+debug = 0
+
+
+[profile.dev.package."*"]
+opt-level = 1
+debug = 0
+
+[profile.release]
+debug = 0
+opt-level = 3
+lto = "fat"
+#lto = "thin"
+codegen-units = 1
+#strip = "symbols"
+

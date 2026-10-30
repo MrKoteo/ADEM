@@ -1,0 +1,10 @@
+{
+  "id": "bow_mirrored",
+  "category": "manual",
+  "grid": [
+    [null, "stick", "cordage"],
+    [null, "stick", "cordage"],
+    [null, "stick", "cordage"]
+  ],
+  "result": { "item": "bow", "count": 1 }
+}

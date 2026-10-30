@@ -1,0 +1,10 @@
+{
+  "id": "knife",
+  "category": "manual",
+  "grid": [
+    [null, "rock", null],
+    [null, "stick", null],
+    [null, "cordage", null]
+  ],
+  "result": { "item": "knife", "count": 1 }
+}

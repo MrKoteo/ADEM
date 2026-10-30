@@ -1,0 +1,9 @@
+{
+  "id": "plant_fiber",
+  "category": "manual",
+  "shapeless": true,
+  "ingredients": [
+    { "item": "grass_bunch", "count": 2 }
+  ],
+  "result": { "item": "plant_fiber", "count": 1 }
+}

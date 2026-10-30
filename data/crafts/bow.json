@@ -1,0 +1,10 @@
+{
+  "id": "bow",
+  "category": "manual",
+  "grid": [
+    ["cordage", "stick", null],
+    ["cordage", "stick", null],
+    ["cordage", "stick", null]
+  ],
+  "result": { "item": "bow", "count": 1 }
+}

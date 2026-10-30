@@ -1,0 +1,10 @@
+{
+  "id": "fishing_rod",
+  "category": "manual",
+  "grid": [
+    [null, null, "stick"],
+    [null, "stick", null],
+    [null, null, "cordage"]
+  ],
+  "result": { "item": "fishing_rod", "count": 1 }
+}

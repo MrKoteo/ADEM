@@ -1,0 +1,10 @@
+{
+  "id": "axe",
+  "category": "manual",
+  "grid": [
+    ["rock", "rock", null],
+    ["rock", "stick", null],
+    [null, "stick", "cordage"]
+  ],
+  "result": { "item": "axe", "count": 1 }
+}

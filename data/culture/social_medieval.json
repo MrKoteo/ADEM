@@ -1,0 +1,103 @@
+{
+  "institutions": [
+    {
+      "id": "feudalism",
+      "name": "Феодализм",
+      "era": "medieval",
+      "requires": [
+        "market_customs"
+      ],
+      "description": "Земля за службу: лестница вассальной верности."
+    },
+    {
+      "id": "manorialism",
+      "name": "Вотчинное хозяйство",
+      "era": "medieval",
+      "requires": [
+        "feudalism"
+      ],
+      "description": "Поместье как замкнутый хозяйственный организм."
+    },
+    {
+      "id": "chivalry",
+      "name": "Рыцарский кодекс",
+      "era": "medieval",
+      "requires": [
+        "manorialism"
+      ],
+      "description": "Культ воинской чести и службы сюзерену."
+    },
+    {
+      "id": "monasticism",
+      "name": "Монашество",
+      "era": "medieval",
+      "requires": [
+        "chivalry"
+      ],
+      "description": "Общины книжности и труда хранят знания эпох."
+    },
+    {
+      "id": "craft_guilds",
+      "name": "Ремесленные цеха",
+      "era": "medieval",
+      "requires": [
+        "monasticism"
+      ],
+      "description": "Цеха держат качество, цены и передачу мастерства."
+    },
+    {
+      "id": "common_law",
+      "name": "Общее право",
+      "era": "medieval",
+      "requires": [
+        "craft_guilds"
+      ],
+      "description": "Суды королевства опираются на единый обычай."
+    },
+    {
+      "id": "merchant_leagues",
+      "name": "Купеческие лиги",
+      "era": "medieval",
+      "requires": [
+        "common_law"
+      ],
+      "description": "Города объединяются для защиты торговли на морях."
+    },
+    {
+      "id": "estates_assembly",
+      "name": "Сословные собрания",
+      "era": "medieval",
+      "requires": [
+        "merchant_leagues"
+      ],
+      "description": "Духовенство, дворянство и города соучаствуют во власти."
+    },
+    {
+      "id": "tournaments",
+      "name": "Турниры",
+      "era": "medieval",
+      "requires": [
+        "chivalry"
+      ],
+      "description": "Рыцари упражняются в войне под крики толпы."
+    },
+    {
+      "id": "pilgrimages",
+      "name": "Паломничество",
+      "era": "medieval",
+      "requires": [
+        "monasticism"
+      ],
+      "description": "Дорога к святыне связывает земли и народы."
+    },
+    {
+      "id": "town_charters",
+      "name": "Городские хартии",
+      "era": "medieval",
+      "requires": [
+        "craft_guilds"
+      ],
+      "description": "Город выкупает у сеньора право судиться самому."
+    }
+  ]
+}

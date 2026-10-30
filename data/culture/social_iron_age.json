@@ -1,0 +1,103 @@
+{
+  "institutions": [
+    {
+      "id": "codified_law",
+      "name": "Записанные законы",
+      "era": "iron_age",
+      "requires": [
+        "monument_building"
+      ],
+      "description": "Законы высечены и написаны: суд не зависит от памяти."
+    },
+    {
+      "id": "city_state",
+      "name": "Города-государства",
+      "era": "iron_age",
+      "requires": [
+        "codified_law"
+      ],
+      "description": "Город с округой — самостоятельная политическая единица."
+    },
+    {
+      "id": "citizenship",
+      "name": "Гражданство",
+      "era": "iron_age",
+      "requires": [
+        "city_state"
+      ],
+      "description": "Права и обязанности свободных жителей города."
+    },
+    {
+      "id": "philosophy",
+      "name": "Философия",
+      "era": "iron_age",
+      "requires": [
+        "citizenship"
+      ],
+      "description": "Спор школ о природе, справедливости и благой жизни."
+    },
+    {
+      "id": "organized_religion",
+      "name": "Организованная религия",
+      "era": "iron_age",
+      "requires": [
+        "philosophy"
+      ],
+      "description": "Канон, иерархия жрецов и миссионерство."
+    },
+    {
+      "id": "professional_army",
+      "name": "Профессиональная армия",
+      "era": "iron_age",
+      "requires": [
+        "organized_religion"
+      ],
+      "description": "Служба за плату: войско не расходится на поля."
+    },
+    {
+      "id": "diplomacy",
+      "name": "Дипломатия",
+      "era": "iron_age",
+      "requires": [
+        "professional_army"
+      ],
+      "description": "Послы, договоры и союзные обязательства."
+    },
+    {
+      "id": "market_customs",
+      "name": "Рыночные порядки",
+      "era": "iron_age",
+      "requires": [
+        "diplomacy"
+      ],
+      "description": "Меры веса, гарантии сделок и защита торговцев."
+    },
+    {
+      "id": "colonies",
+      "name": "Заморские колонии",
+      "era": "iron_age",
+      "requires": [
+        "city_state"
+      ],
+      "description": "Лишние руки основывают города на чужих берегах."
+    },
+    {
+      "id": "democracy",
+      "name": "Народное собрание",
+      "era": "iron_age",
+      "requires": [
+        "citizenship"
+      ],
+      "description": "Граждане сами решают вопрос войны и закона голосом."
+    },
+    {
+      "id": "mercenaries",
+      "name": "Наёмники",
+      "era": "iron_age",
+      "requires": [
+        "professional_army"
+      ],
+      "description": "Чужой меч за плату — война становится ремеслом."
+    }
+  ]
+}

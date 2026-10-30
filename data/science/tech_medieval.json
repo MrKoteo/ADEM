@@ -1,0 +1,130 @@
+{
+  "technologies": [
+    {
+      "id": "masonry",
+      "name": "Каменная кладка",
+      "era": "medieval",
+      "requires": [
+        "heavy_plow"
+      ],
+      "description": "Известковый раствор и арки: дома и крепости на века."
+    },
+    {
+      "id": "three_field_system",
+      "name": "Трёхполье",
+      "era": "medieval",
+      "requires": [
+        "masonry"
+      ],
+      "description": "Севооборот с паром не истощает землю."
+    },
+    {
+      "id": "windmills",
+      "name": "Ветряная мельница",
+      "era": "medieval",
+      "requires": [
+        "three_field_system"
+      ],
+      "description": "Ветер мелет зерно там, где нет быстрой реки."
+    },
+    {
+      "id": "mechanical_clocks",
+      "name": "Механические часы",
+      "era": "medieval",
+      "requires": [
+        "windmills"
+      ],
+      "description": "Городское время отсчитывается шестерёнками."
+    },
+    {
+      "id": "compass",
+      "name": "Компас",
+      "era": "medieval",
+      "requires": [
+        "mechanical_clocks"
+      ],
+      "description": "Магнитная стрелка ведёт корабли вне видимости берега."
+    },
+    {
+      "id": "keel_ships",
+      "name": "Килевое судостроение",
+      "era": "medieval",
+      "requires": [
+        "compass"
+      ],
+      "description": "Киль и паруса делают морские переходы дальними."
+    },
+    {
+      "id": "universities",
+      "name": "Университеты",
+      "era": "medieval",
+      "requires": [
+        "keel_ships"
+      ],
+      "description": "Корпорации учёных: знания передаются поколениями."
+    },
+    {
+      "id": "optics",
+      "name": "Стеклянная оптика",
+      "era": "medieval",
+      "requires": [
+        "universities"
+      ],
+      "description": "Очки и линзы возвращают зрение ремесленникам и книжникам."
+    },
+    {
+      "id": "gunpowder",
+      "name": "Порох",
+      "era": "medieval",
+      "requires": [
+        "optics"
+      ],
+      "description": "Селитра, сера и уголь меняют войну и горное дело."
+    },
+    {
+      "id": "printing_press",
+      "name": "Книгопечатание",
+      "era": "medieval",
+      "requires": [
+        "gunpowder"
+      ],
+      "description": "Наборный шрифт делает книгу доступной не только храмам."
+    },
+    {
+      "id": "horse_harness",
+      "name": "Конская упряжь",
+      "era": "medieval",
+      "requires": [
+        "three_field_system"
+      ],
+      "description": "Хомут раскрывает силу лошади — пашня идёт быстрее."
+    },
+    {
+      "id": "blast_furnace",
+      "name": "Доменная печь",
+      "era": "medieval",
+      "requires": [
+        "masonry"
+      ],
+      "description": "Непрерывная плавка даёт чугун в промышленных объёмах."
+    },
+    {
+      "id": "spectacles",
+      "name": "Очки",
+      "era": "medieval",
+      "requires": [
+        "optics"
+      ],
+      "description": "Шлифованное стекло возвращает зрение старикам."
+    },
+    {
+      "id": "plate_armor",
+      "name": "Латы",
+      "era": "medieval",
+      "requires": [
+        "gunpowder"
+      ],
+      "description": "Цельный доспех закрывает воина целиком."
+    }
+  ]
+}

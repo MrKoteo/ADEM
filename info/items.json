@@ -1,0 +1,23 @@
+{
+  "items": [
+    { "id": "stick", "name": "Палка" },
+    { "id": "rock", "name": "Камень" },
+    { "id": "apple", "name": "Яблоко" },
+    { "id": "grass_bunch", "name": "Пучок травы" },
+    { "id": "plant_fiber", "name": "Растительное волокно" },
+    { "id": "cordage", "name": "Верёвка" },
+    { "id": "axe", "name": "Примитивный топор" },
+    { "id": "pickaxe", "name": "Примитивная кирка" },
+    { "id": "hoe", "name": "Примитивная мотыга" },
+    { "id": "shovel", "name": "Примитивная лопата" },
+    { "id": "spear", "name": "Примитивное копьё" },
+    { "id": "knife", "name": "Каменный нож" },
+    { "id": "fishing_rod", "name": "Примитивная удочка" },
+    { "id": "arrow", "name": "Стрела" },
+    { "id": "bow", "name": "Лук" },
+    { "id": "helmet_chainmail", "name": "Кольчужный шлем" },
+    { "id": "chestplate_chainmail", "name": "Кольчужная кираса" },
+    { "id": "leggings_chainmail", "name": "Кольчужные поножи" },
+    { "id": "boots_chainmail", "name": "Кольчужные ботинки" }
+  ]
+}

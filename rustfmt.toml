@@ -1,0 +1,96 @@
+# Максимальная длина строки. По умолчанию: 100.
+max_width = 100
+
+# Отступы табами вместо пробелов. По умолчанию: false.
+hard_tabs = false
+
+# Число пробелов на один уровень отступа. По умолчанию: 4.
+# tab_spaces = 4
+
+# Стиль окончания строк: Auto, Windows, Unix или Native. По умолчанию: Auto.
+# newline_style = "Auto"
+
+# Эвристики для компактного форматирования: Off, Max или Default.
+# По умолчанию: Default.
+use_small_heuristics = "Default"
+
+# Максимальная ширина аргументов вызова функции перед переносом.
+# По умолчанию: 60.
+# fn_call_width = 60
+
+# Максимальная ширина аргументов function-like атрибутов. По умолчанию: 70.
+# attr_fn_like_width = 70
+
+# Максимальная ширина содержимого литерала структуры. По умолчанию: 18.
+# struct_lit_width = 18
+
+# Максимальная ширина содержимого варианта enum-структуры. По умолчанию: 35.
+# struct_variant_width = 35
+
+# Максимальная ширина литерала массива перед переносом. По умолчанию: 60.
+# array_width = 60
+
+# Максимальная длина цепочки вызовов на одной строке. По умолчанию: 60.
+# chain_width = 60
+
+# Максимальная длина однострочного if-else. Ноль — всегда переносить.
+# По умолчанию: 50.
+# single_line_if_else_max_width = 50
+
+# Максимальная длина однострочного let-else. Ноль — переносить else-блок.
+# По умолчанию: 50.
+# single_line_let_else_max_width = 50
+
+# Регистр шестнадцатеричных литералов: Preserve, Upper или Lower.
+# По умолчанию: Preserve.
+hex_literal_case = "Upper"
+
+# Сортировать импорты по алфавиту. По умолчанию: true.
+reorder_imports = false
+
+# Сортировать объявления модулей по алфавиту. По умолчанию: true.
+reorder_modules = false
+
+# Удалять лишние вложенные скобки. По умолчанию: true.
+remove_nested_parens = true
+
+# Порог ширины элемента массива для определения «короткого» элемента.
+# По умолчанию: 10.
+# short_array_element_width_threshold = 10
+
+# Начальные вертикальные черты в match arms: Always, Never или Preserve.
+# По умолчанию: Never.
+match_arm_leading_pipes = "Never"
+
+# Раскладка параметров функций: Compressed, Tall или Vertical.
+# По умолчанию: Tall.
+# fn_params_layout = "Tall"
+
+# Добавлять завершающую запятую после match arm с блоком. По умолчанию: false.
+match_block_trailing_comma = false
+
+# Версия Rust Edition парсера. Указать ту же, что в Cargo.toml.
+edition = "2024"
+
+# Версия стиля форматирования. По умолчанию: 2015.
+style_edition = "2024"
+
+# Объединять несколько #[derive(...)] в один атрибут. По умолчанию: true.
+merge_derives = true
+
+# Заменять try! на оператор ?. По умолчанию: false.
+use_try_shorthand = false
+
+# Использовать сокращённую запись инициализации полей. По умолчанию: false.
+use_field_init_shorthand = false
+
+# Всегда явно выводить ABI у extern-элементов. По умолчанию: true.
+force_explicit_abi = true
+
+# Полностью отключить форматирование. По умолчанию: false.
+# Не включайте это, если хотите форматировать код.
+disable_all_formatting = true
+
+# Показывать имена файлов, которые были бы отформатированы при --check.
+# По умолчанию: false.
+print_misformatted_file_names = true

@@ -1,0 +1,9 @@
+{
+  "id": "cordage",
+  "category": "manual",
+  "shapeless": true,
+  "ingredients": [
+    { "item": "plant_fiber", "count": 3 }
+  ],
+  "result": { "item": "cordage", "count": 1 }
+}

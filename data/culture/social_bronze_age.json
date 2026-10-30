@@ -1,0 +1,103 @@
+{
+  "institutions": [
+    {
+      "id": "chieftaindom",
+      "name": "Вождество",
+      "era": "bronze_age",
+      "requires": [
+        "trade_customs"
+      ],
+      "description": "Власть концентрируется у вождя и его дружины."
+    },
+    {
+      "id": "clan_law",
+      "name": "Родовое право",
+      "era": "bronze_age",
+      "requires": [
+        "chieftaindom"
+      ],
+      "description": "Порядок наследования и кровная ответственность рода."
+    },
+    {
+      "id": "polytheism",
+      "name": "Пантеон богов",
+      "era": "bronze_age",
+      "requires": [
+        "clan_law"
+      ],
+      "description": "Устоявшийся культ: жрецы, храмы и календарь праздников."
+    },
+    {
+      "id": "division_of_labor",
+      "name": "Разделение труда",
+      "era": "bronze_age",
+      "requires": [
+        "polytheism"
+      ],
+      "description": "Кузнецы, гончары и жрецы кормятся ремеслом."
+    },
+    {
+      "id": "tribute_system",
+      "name": "Дань и подати",
+      "era": "bronze_age",
+      "requires": [
+        "division_of_labor"
+      ],
+      "description": "Часть урожая и изделий стекается к правителям."
+    },
+    {
+      "id": "wealth_classes",
+      "name": "Имущественные сословия",
+      "era": "bronze_age",
+      "requires": [
+        "tribute_system"
+      ],
+      "description": "Богатство закрепляется за семьями поколениями."
+    },
+    {
+      "id": "scribe_tradition",
+      "name": "Традиция писцов",
+      "era": "bronze_age",
+      "requires": [
+        "wealth_classes"
+      ],
+      "description": "Школа писцов: учёт и память переносятся на знаки."
+    },
+    {
+      "id": "monument_building",
+      "name": "Монументальное строительство",
+      "era": "bronze_age",
+      "requires": [
+        "scribe_tradition"
+      ],
+      "description": "Курганы, зиккураты и стены как сила и сплочённость."
+    },
+    {
+      "id": "hereditary_rule",
+      "name": "Наследственная власть",
+      "era": "bronze_age",
+      "requires": [
+        "chieftaindom"
+      ],
+      "description": "Власть вождя переходит к его детям без спора."
+    },
+    {
+      "id": "priesthood",
+      "name": "Жречество",
+      "era": "bronze_age",
+      "requires": [
+        "polytheism"
+      ],
+      "description": "Отдельное сословие говорит с богами за всех."
+    },
+    {
+      "id": "slavery",
+      "name": "Рабство",
+      "era": "bronze_age",
+      "requires": [
+        "tribute_system"
+      ],
+      "description": "Пленный — имущество: тяжёлые работы делают чужие руки."
+    }
+  ]
+}

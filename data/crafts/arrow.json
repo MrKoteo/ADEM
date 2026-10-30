@@ -1,0 +1,10 @@
+{
+  "id": "arrow",
+  "category": "manual",
+  "shapeless": true,
+  "ingredients": [
+    { "item": "rock", "count": 1 },
+    { "item": "stick", "count": 1 }
+  ],
+  "result": { "item": "arrow", "count": 2 }
+}

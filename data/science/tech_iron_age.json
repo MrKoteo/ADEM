@@ -1,0 +1,130 @@
+{
+  "technologies": [
+    {
+      "id": "iron_smelting",
+      "name": "Выплавка железа",
+      "era": "iron_age",
+      "requires": [
+        "wheel"
+      ],
+      "description": "Сыродутная печь даёт железо из болотной руды."
+    },
+    {
+      "id": "blacksmithing",
+      "name": "Кузнечное дело",
+      "era": "iron_age",
+      "requires": [
+        "iron_smelting"
+      ],
+      "description": "Ковка на наковальне: из крицы делают инструменты и оружие."
+    },
+    {
+      "id": "quench_hardening",
+      "name": "Закалка стали",
+      "era": "iron_age",
+      "requires": [
+        "blacksmithing"
+      ],
+      "description": "Науглероженное и закалённое лезвие не тупится."
+    },
+    {
+      "id": "coinage",
+      "name": "Монетная чеканка",
+      "era": "iron_age",
+      "requires": [
+        "quench_hardening"
+      ],
+      "description": "Штампованные монеты заменяют обмен по весу."
+    },
+    {
+      "id": "water_mill",
+      "name": "Водяная мельница",
+      "era": "iron_age",
+      "requires": [
+        "coinage"
+      ],
+      "description": "Река мелет зерно вместо десятков рук."
+    },
+    {
+      "id": "iron_armor",
+      "name": "Железные доспехи",
+      "era": "iron_age",
+      "requires": [
+        "water_mill"
+      ],
+      "description": "Кольчуга и пластины надёжнее бронзы и легче камня."
+    },
+    {
+      "id": "glassmaking",
+      "name": "Стеклоделие",
+      "era": "iron_age",
+      "requires": [
+        "iron_armor"
+      ],
+      "description": "Стекло идёт в посуду, бусины и оконные диски."
+    },
+    {
+      "id": "siege_engines",
+      "name": "Осадные машины",
+      "era": "iron_age",
+      "requires": [
+        "glassmaking"
+      ],
+      "description": "Катапульты и тараны ломают стены городов."
+    },
+    {
+      "id": "aqueducts",
+      "name": "Акведуки",
+      "era": "iron_age",
+      "requires": [
+        "siege_engines"
+      ],
+      "description": "Мосты из арок несут воду через долины в города."
+    },
+    {
+      "id": "heavy_plow",
+      "name": "Тяжёлый плуг",
+      "era": "iron_age",
+      "requires": [
+        "aqueducts"
+      ],
+      "description": "Железный лемех поднимает плотные почвы севера."
+    },
+    {
+      "id": "pattern_welding",
+      "name": "Сварка узорной стали",
+      "era": "iron_age",
+      "requires": [
+        "quench_hardening"
+      ],
+      "description": "Полосы стали проковываются в клинок лучше бронзы."
+    },
+    {
+      "id": "stirrup",
+      "name": "Стремя",
+      "era": "iron_age",
+      "requires": [
+        "iron_armor"
+      ],
+      "description": "Всадник держится в седле и бьёт с полной силы."
+    },
+    {
+      "id": "glass_blowing",
+      "name": "Выдувание стекла",
+      "era": "iron_age",
+      "requires": [
+        "glassmaking"
+      ],
+      "description": "Стекло перестаёт быть роскошью для немногих."
+    },
+    {
+      "id": "arch_bridge",
+      "name": "Арочный мост",
+      "era": "iron_age",
+      "requires": [
+        "aqueducts"
+      ],
+      "description": "Каменный свод держит вес — переправы через ущелья."
+    }
+  ]
+}
