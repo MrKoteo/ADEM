@@ -1,0 +1,14 @@
+{
+  "id": "primal_fishing_rod",
+  "parent": "manual",
+  "ingredients": {
+    "0": "stick",
+    "1": "cordage"
+  },
+  "grid": [
+    [null, null, "0"],
+    [null, "0", "1"],
+    ["0", null, "1"]
+  ],
+  "result": { "item": "primal_fishing_rod", "count": 1 }
+}

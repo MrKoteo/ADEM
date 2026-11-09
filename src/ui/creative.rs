@@ -309,7 +309,7 @@ fn spawn_filtered_rows(
 fn apply_creative_search(
     mut commands: Commands,
     mut searches: Query<&mut EditableText, With<CreativeSearch>>,
-    mut rows_containers: Query<(Entity, &mut CreativeRows, &Children)>,
+    mut rows_containers: Query<(Entity, &mut CreativeRows, Option<&Children>)>,
     font: Res<UiFont>,
     icons: Res<UiIcons>,
     names: Res<ItemNames>,
@@ -325,8 +325,10 @@ fn apply_creative_search(
         return;
     }
     rows.applied = filter.clone();
-    for child in children.iter() {
-        commands.entity(child).despawn();
+    if let Some(children) = children {
+        for child in children.iter() {
+            commands.entity(child).despawn();
+        }
     }
     commands.entity(entity).with_children(|rows| {
         spawn_filtered_rows(rows, &filter, &font, &icons, &names);

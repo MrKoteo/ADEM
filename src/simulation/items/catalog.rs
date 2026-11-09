@@ -39,7 +39,7 @@ pub enum ItemKind {
     /// Каменный нож.
     KnifePrimal,
     /// Примитивная удочка.
-    FishingRod,
+    FishingRodPrimal,
     /// Стрела (боеприпас лука).
     Arrow,
     /// Деревянный лук.
@@ -213,7 +213,7 @@ impl ItemKind {
         ItemKind::ShovelPrimal,
         ItemKind::SpearPrimal,
         ItemKind::KnifePrimal,
-        ItemKind::FishingRod,
+        ItemKind::FishingRodPrimal,
         ItemKind::Arrow,
         ItemKind::Bow,
         ItemKind::HelmetChainmail,
@@ -310,7 +310,7 @@ impl ItemKind {
             9 => Some(Self::ShovelPrimal),
             10 => Some(Self::SpearPrimal),
             11 => Some(Self::KnifePrimal),
-            12 => Some(Self::FishingRod),
+            12 => Some(Self::FishingRodPrimal),
             13 => Some(Self::Arrow),
             14 => Some(Self::Bow),
             15 => Some(Self::HelmetChainmail),
@@ -408,7 +408,7 @@ impl ItemKind {
             ItemKind::ShovelPrimal => "primal_shovel",
             ItemKind::SpearPrimal => "primal_spear",
             ItemKind::KnifePrimal => "primal_knife",
-            ItemKind::FishingRod => "fishing_rod",
+            ItemKind::FishingRodPrimal => "primal_fishing_rod",
             ItemKind::Arrow => "arrow",
             ItemKind::Bow => "bow",
             ItemKind::HelmetChainmail => "helmet_chainmail",
@@ -523,7 +523,7 @@ impl ItemKind {
             | ItemKind::ShovelPrimal
             | ItemKind::SpearPrimal
             | ItemKind::KnifePrimal
-            | ItemKind::FishingRod
+            | ItemKind::FishingRodPrimal
             | ItemKind::Arrow
             | ItemKind::Bow
             | ItemKind::Bone
@@ -617,7 +617,7 @@ impl ItemKind {
             | ItemKind::ShovelPrimal
             | ItemKind::SpearPrimal
             | ItemKind::KnifePrimal
-            | ItemKind::FishingRod
+            | ItemKind::FishingRodPrimal
             | ItemKind::Bow
             | ItemKind::HelmetChainmail
             | ItemKind::ChestplateChainmail

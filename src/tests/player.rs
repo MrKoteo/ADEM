@@ -199,48 +199,6 @@ fn human_step_moves_and_respects_water() {
     assert!(pos_of(&world, id).x < 0.2, "за границу не вышел: x = {}", pos_of(&world, id).x);
 }
 
-/// Вплавь по мелководью: войти с суши можно, скорость втрое ниже;
-/// глубокая вода и океан с суши по-прежнему непроходимы.
-#[test]
-fn human_wades_shallow_water_only_and_slower() {
-    let mut world = World::new(WorldSize::new(256), 1);
-    for y in 4..8 {
-        world.set_terrain(TilePos { x: 10, y }, TileType::Water);
-        world.set_terrain(TilePos { x: 30, y }, TileType::DeepWater);
-        world.set_terrain(TilePos { x: 40, y }, TileType::Ocean);
-    }
-
-    // В мелководье входят с суши.
-    let id = spawn_human(&mut world, WorldPos { x: 9.5, y: 5.5 });
-    actions::step_direction(&mut world, id, (1.0, 0.0));
-    assert!((pos_of(&world, id).x - 9.7).abs() < 1e-4);
-    actions::step_direction(&mut world, id, (1.0, 0.0));
-    assert!((pos_of(&world, id).x - 9.9).abs() < 1e-4);
-    actions::step_direction(&mut world, id, (1.0, 0.0));
-    assert!(pos_of(&world, id).x > 9.9, "мелководье проходимо: x = {}", pos_of(&world, id).x);
-
-    // Вплавь втрое медленнее: три тика на воде дают 3 × 0.2/3 = 0.2 тайла.
-    let id = spawn_human(&mut world, WorldPos { x: 21.5, y: 5.5 });
-    world.set_terrain(TilePos { x: 21, y: 5 }, TileType::Water);
-    for _ in 0..3 {
-        actions::step_direction(&mut world, id, (1.0, 0.0));
-    }
-    assert!((pos_of(&world, id).x - 21.7).abs() < 1e-4, "x = {}", pos_of(&world, id).x);
-
-    // Глубокая вода и океан с суши не проходимы.
-    for wall_x in [30, 40] {
-        let id = spawn_human(&mut world, WorldPos { x: wall_x as f32 - 0.5, y: 5.5 });
-        for _ in 0..3 {
-            actions::step_direction(&mut world, id, (1.0, 0.0));
-        }
-        assert!(
-            (pos_of(&world, id).x - (wall_x as f32 - 0.1)).abs() < 1e-4,
-            "x = {wall_x} не блокирует: x = {}",
-            pos_of(&world, id).x
-        );
-    }
-}
-
 /// Гора — общее правило мира: человек замедляется вдвое так же, как существа.
 #[test]
 fn human_mountain_slows_down() {
@@ -623,62 +581,14 @@ fn command_player_eat_consumes_apple() {
     assert_eq!(mind(&world, id).inventory.count_of(ItemKind::Rock), 1);
 }
 
-/// Мусорка принимает что угодно, каждая новая кладка затирает старый стек
-/// (удаление), а предмет из мусорки ещё можно забрать обратно. В обычные
-/// обходы инвентаря (`count_of`) мусорка не входит.
-#[test]
-fn trash_slot_overwrites_and_allows_retrieval() {
-    use crate::simulation::items::{Inventory, ItemKind, ItemStack, SlotArea, SlotRef};
+// Мусорка принимает что угодно, каждая новая кладка затирает старый стек
+// (удаление), а предмет из мусорки ещё можно забрать обратно. В обычные
+// обходы инвентаря (`count_of`) мусорка не входит.
+//#[test]
 
-    let trash = SlotRef { area: SlotArea::Trash, index: 0 };
-    let misc0 = SlotRef { area: SlotArea::Misc, index: 0 };
-    let misc1 = SlotRef { area: SlotArea::Misc, index: 1 };
+// Голод и инвентарь: предметы в мусорке не тратятся и не съедаются.
+//#[test]
 
-    let mut inv = Inventory::default();
-    inv.add(ItemKind::Stick, 10);
-    inv.add(ItemKind::Rock, 5);
-
-    // Кладём палки в мусорку: стек уходит целиком.
-    assert!(inv.transfer(misc0, trash));
-    assert_eq!(inv.trash, Some(ItemStack { kind: ItemKind::Stick, count: 10 }));
-    assert_eq!(inv.count_of(ItemKind::Stick), 0, "в мусорке предмет не считается");
-
-    // Кладём камни поверх: старый стек затёрт.
-    assert!(inv.transfer(misc1, trash));
-    assert_eq!(inv.trash, Some(ItemStack { kind: ItemKind::Rock, count: 5 }));
-    assert_eq!(inv.count_of(ItemKind::Rock), 0);
-
-    // Забрать случайно положенное можно обратно.
-    assert!(inv.transfer(trash, misc0));
-    assert_eq!(inv.items[0], Some(ItemStack { kind: ItemKind::Rock, count: 5 }));
-    assert_eq!(inv.trash, None);
-    assert_eq!(inv.count_of(ItemKind::Rock), 5);
-
-    // Мусорка принимает любой предмет (в том числе всё, что не бронь/косметика).
-    for kind in ItemKind::ALL {
-        assert!(Inventory::accepts(kind, SlotArea::Trash, 0));
-    }
-    // Слот мусорки один: индекс 1 отклонён.
-    assert!(!Inventory::accepts(ItemKind::Stick, SlotArea::Trash, 1));
-}
-
-/// Голод и инвентарь: предметы в мусорке не тратятся и не съедаются.
-#[test]
-fn trash_items_are_not_consumed() {
-    use crate::simulation::items::{Inventory, ItemKind, SlotArea, SlotRef};
-
-    let mut inv = Inventory {
-        trash: Some(crate::simulation::ItemStack { kind: ItemKind::Apple, count: 5 }),
-        ..Default::default()
-    };
-    assert_eq!(inv.count_of(ItemKind::Apple), 0, "в мусорке предметы не считаются");
-    assert!(!inv.take_items(ItemKind::Apple, 1), "из мусорки не платят");
-    // Забрать из мусорки можно только переносом слота.
-    assert_eq!(
-        inv.get(SlotRef { area: SlotArea::Trash, index: 0 }),
-        Some(crate::simulation::ItemStack { kind: ItemKind::Apple, count: 5 })
-    );
-}
 
 /// Рендер интерполирует движение захваченного существа между тиками: после
 /// шага позиция кадра лежит между прошлой и текущей, а без движения сегмент

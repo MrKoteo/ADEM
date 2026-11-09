@@ -239,7 +239,7 @@ fn shaped_recipe_resolves_symbols() {
                 [null, "0", null],
                 [null, null, null]
             ],
-            "result": { "item": "axe", "count": 1 }
+            "result": { "item": "primal_axe", "count": 1 }
         }"#,
     )
     .expect("символы должны разбираться");
@@ -264,7 +264,7 @@ fn shaped_recipe_resolves_symbols() {
                 [null, null, null],
                 [null, null, null]
             ],
-            "result": { "item": "axe", "count": 1 }
+            "result": { "item": "primal_axe", "count": 1 }
         }"#,
     )
     .expect_err("неизвестный символ должен давать ошибку");

@@ -11,7 +11,7 @@ use crate::simulation::items::BodySlot;
 use crate::simulation::{EntityKind, ItemKind, ObjectKind, TileType, ITEM_KIND_COUNT};
 
 /// Число видов тайлов с иконками (Water..Podzol; Empty в UI не нужен).
-const TILE_ICON_COUNT: usize = 14;
+const TILE_ICON_COUNT: usize = 14; // Необходимо определять динамически при запуске игры, исходя из размера реестра тайлов. Причина:  упрощение поддержки и модификации кода.
 
 /// Число специализаций брони разумного существа с текстурой пустого слота.
 const EMPTY_ARMOR_SLOT_COUNT: usize = 4;
@@ -109,8 +109,8 @@ impl UiIcons {
                 nearest("textures/items/paper.png"),
                 nearest("textures/items/paper_pulp.png"),
                 nearest("textures/items/clods/clod_clay.png"),
-                nearest("textures/items/brick_clay_unfired.png"),
-                nearest("textures/items/brick_clay_baked.png"),
+                nearest("textures/items/ceramics/brick_clay_unfired.png"),
+                nearest("textures/items/ceramics/brick_clay_baked.png"),
                 nearest("textures/items/seeds/seeds_wheat.png"),
                 nearest("textures/items/wheat.png"),
                 nearest("textures/items/tools/hammer_stone.png"),
@@ -136,7 +136,7 @@ impl UiIcons {
                 nearest("textures/items/dust/dust_sugar.png"),
                 nearest("textures/items/dust/dust_sulfur.png"),
                 nearest("textures/items/dust/dust_tin.png"),
-                nearest("textures/items/dust/dust_wood_chips.png"),
+                nearest("textures/items/dust/dust_wood.png"),
                 nearest("textures/items/food/apple_baked.png"),
                 nearest("textures/items/food/carrot.png"),
                 nearest("textures/items/food/carrot_baked.png"),
@@ -168,15 +168,14 @@ impl UiIcons {
                 nearest("textures/items/food/beetroot.png"),
                 nearest("textures/items/food/beetroot_roasted.png"),
                 nearest("textures/items/food/cherry.png"),
-                nearest("textures/items/coal.png"),
-                nearest("textures/items/charcoal.png"),
+                nearest("textures/items/gem/gem_coal.png"),
+                nearest("textures/items/gem/gem_charcoal.png"),
                 nearest("textures/items/torch.png"),
             ],
-            // Человек временно рисуется текстурой игрока (как в рендере).
             entities: [
                 nearest("textures/entities/wolf/wolf_standing.png"),
-                nearest("textures/entities/player.png"),
-                nearest("textures/entities/rabit/rabit_sit.png"),
+                nearest("textures/entities/human/human.png"),
+                nearest("textures/entities/rabbit/rabbit_sit.png"),
             ],
             empty_armor_slots: [
                 nearest("textures/ui/inventory/empty_armor_slot_helmet.png"),
