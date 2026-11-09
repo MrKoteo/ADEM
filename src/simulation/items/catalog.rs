@@ -295,7 +295,6 @@ impl ItemKind {
     ];
 
     /// Вид предмета по стабильному значению u8 (сохранения).
-    #[allow(dead_code)] // задел для сохранений, как у остальных repr(u8)
     pub fn from_discriminant(value: u8) -> Option<Self> {
         match value {
             0 => Some(Self::Stick),

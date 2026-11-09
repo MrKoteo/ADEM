@@ -21,8 +21,6 @@ use bevy::input_focus::InputFocus;
 use bevy::prelude::*;
 use bevy::ui_widgets::TextInput;
 
-use icons::UiIcons;
-
 pub use inventory::CraftBookRes;
 
 /// Ресурс с хэндлом шрифта, чтобы все тексты использовали FiraSans-Medium.
@@ -93,9 +91,9 @@ pub struct UiPlugin;
 
 impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
-        // PreStartup: `UiFont` и `UiIcons` должны существовать до систем
-        // Startup, которые их читают.
-        app.add_systems(PreStartup, (load_font, load_icons))
+        // PreStartup: `UiFont` должен существовать до систем Startup,
+        // которые его читают. Иконки грузит общий реестр рендера.
+        app.add_systems(PreStartup, load_font)
             .add_plugins(fps::FpsPlugin)
             .add_plugins(bottom_panel::BottomPanelPlugin)
             .add_plugins(menus::MenusPlugin)
@@ -116,7 +114,3 @@ fn load_font(mut commands: Commands, assets: Res<AssetServer>) {
     commands.insert_resource(UiFont(assets.load("fonts/FiraSans-Medium.ttf")));
 }
 
-/// Загружает иконки тайлов, объектов и предметов для UI.
-fn load_icons(mut commands: Commands, assets: Res<AssetServer>) {
-    commands.insert_resource(UiIcons::load(&assets));
-}

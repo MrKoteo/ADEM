@@ -161,6 +161,17 @@ impl EntityKind {
         matches!(self, EntityKind::Human)
     }
 
+    /// Число кадров анимации ходьбы. Рендер строит по этому значению
+    /// текстуры кадров в атласе; `walk_frame` обязан возвращать индекс
+    /// в этих пределах.
+    pub fn walk_frame_count(self) -> u8 {
+        match self {
+            EntityKind::Wolf => 2,
+            EntityKind::Rabbit => RABBIT_WALK_FRAMES,
+            EntityKind::Human => 1,
+        }
+    }
+
     /// Вид существа по стабильному значению u8 (сохранения).
     pub fn from_discriminant(value: u8) -> Option<Self> {
         match value {

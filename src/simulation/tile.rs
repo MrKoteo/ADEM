@@ -53,31 +53,24 @@ impl TileType {
         }
     }
 
-    /// Цвет-плейсхолдер (RGBA) для рендера, пока нет текстур.
-    /// Имена вариантов уже соответствуют «будущим» текстурам.
-    pub fn placeholder_color(self) -> [f32; 4] {
-        match self {
-            TileType::Empty => [0.0, 0.0, 0.0, 0.0],
-            TileType::Water => [0.14, 0.33, 0.62, 1.0],
-            TileType::Sand => [0.84, 0.79, 0.54, 1.0],
-            TileType::Dirt => [0.42, 0.31, 0.20, 1.0],
-            TileType::Grass => [0.34, 0.58, 0.24, 1.0],
-            TileType::ForestGrass => [0.20, 0.42, 0.15, 1.0],
-            TileType::Stone => [0.53, 0.53, 0.56, 1.0],
-            TileType::Clay => [0.62, 0.39, 0.27, 1.0],
-            TileType::Farmland => [0.39, 0.29, 0.17, 1.0],
-            TileType::DeepWater => [0.10, 0.24, 0.50, 1.0],
-            TileType::Ocean => [0.05, 0.15, 0.38, 1.0],
-            TileType::Mountain => [0.36, 0.35, 0.34, 1.0],
-            TileType::Moss => [0.24, 0.45, 0.20, 1.0],
-            TileType::Mud => [0.31, 0.25, 0.18, 1.0],
-            TileType::Podzol => [0.44, 0.32, 0.18, 1.0],
-        }
-    }
-
     /// Водный ли тайл: любая из трёх глубин воды непроходима с суши.
     pub fn is_water(self) -> bool {
         matches!(self, TileType::Water | TileType::DeepWater | TileType::Ocean)
+    }
+
+    /// Число непустых видов тайлов (без `Empty`). Выводится из
+    /// `from_discriminant`, поэтому новый вид не требует правки счётчика
+    /// в рендере — только своего пути в `texture_path`.
+    pub fn non_empty_count() -> usize {
+        let mut count = 0;
+        // Дискриминант непустых видов начинается с 1 и не выходит за u8.
+        while count < u8::MAX as usize {
+            if Self::from_discriminant((count + 1) as u8).is_none() {
+                break;
+            }
+            count += 1;
+        }
+        count
     }
 }
 

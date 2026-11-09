@@ -15,7 +15,8 @@
 //!   и существа, контуры выделения, вспышки урона, счётчики предметов;
 //! - `hologram` — голограмма строительства;
 //! - `isometric` — изометрическая проекция и визуальные высоты тайлов;
-//! - `textures` — реестр текстур (`TileTextures`);
+//! - `textures` — единый реестр исходников (`GameTextures`) и динамические
+//!   атласы (`TextureAtlases`);
 //! - `combat`, `lighting`, `lenses` — боевые эффекты, оверлей тьмы, линзы карты.
 
 use bevy::prelude::*;
@@ -48,11 +49,11 @@ pub(crate) use sprites::{
 #[allow(unused_imports)]
 pub(crate) use terrain::{
     BLOCK_TILES, BlockPos, LodTransition, MAX_LOD, RenderMetrics, TARGET_CELL_PX,
-    TILE_KIND_COUNT, TerrainRender, atlas_uv, build_block_mesh, dominant_atlas_index,
-    ensure_ground_material, lod_for_scale, lod_transition_for, render_world, tile_atlas_index,
+    TerrainRender, build_block_mesh, dominant_atlas_index, ensure_ground_material, lod_for_scale,
+    lod_transition_for, render_world, tile_atlas_index,
 };
 #[allow(unused_imports)]
-pub(crate) use textures::TileTextures;
+pub(crate) use textures::{AtlasTexture, GameTextures, TextureAtlases};
 
 pub struct RenderingPlugin;
 
@@ -62,7 +63,7 @@ impl Plugin for RenderingPlugin {
             MaterialPlugin::<terrain::TerrainMaterial>::default(),
             Material2dPlugin::<lighting::DarknessMaterial>::default(),
         ))
-            .add_systems(Startup, textures::load_tile_textures)
+            .add_systems(PreStartup, textures::load_game_textures)
             .init_resource::<TerrainRender>()
             .init_resource::<RenderMetrics>()
             .init_resource::<sprites::EntitySprites>()
@@ -76,6 +77,9 @@ impl Plugin for RenderingPlugin {
             .add_systems(
                 Update,
                 (
+                    // Атласы собираются до всего, что их читает: пока PNG
+                    // грузятся, мир не рисуется (первые кадры).
+                    textures::build_texture_atlases,
                     ensure_ground_material,
                     render_world,
                     // Счётчики предметов скрываются/показываются по зуму;
@@ -105,6 +109,7 @@ impl Plugin for RenderingPlugin {
                     update_selection_outlines.after(update_entity_sprites),
                 )
                     .after(SimTick)
+                    .after(textures::build_texture_atlases)
                     .after(crate::app::camera::update_camera_transforms),
             )
             // Оверлей тьмы поверх мира ( lighting): после перестройки блоков,

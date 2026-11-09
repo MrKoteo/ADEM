@@ -105,7 +105,7 @@ impl ItemEntities {
         self.items.len()
     }
 
-    /// Пуст ли склад.
+    /// Пусто ли хранилище item-сущностей.
     #[allow(dead_code)] // читается тестами
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()

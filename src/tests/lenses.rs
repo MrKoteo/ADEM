@@ -65,7 +65,9 @@ fn terrain_mesh_keeps_vertex_attributes_in_main_world_for_lens_updates() {
             world.set_terrain(TilePos { x, y }, TileType::Grass);
         }
     }
-    let mesh = build_block_mesh(&world, BlockPos { x: 0, y: 0 }, 4)
+    let tile_uv =
+        vec![[0.0, 0.0, 1.0, 1.0]; crate::simulation::tile::TileType::non_empty_count()];
+    let mesh = build_block_mesh(&world, BlockPos { x: 0, y: 0 }, 4, &tile_uv)
         .expect("configured world has terrain");
 
     assert!(

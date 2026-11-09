@@ -12,12 +12,11 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use bevy::asset::RenderAssetUsages;
-use bevy::image::ImageSampler;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::pbr::{ExtendedMaterial, MaterialExtension};
 use bevy::prelude::*;
 use bevy::reflect::TypePath;
-use bevy::render::render_resource::{AsBindGroup, Extent3d, TextureDimension, TextureFormat};
+use bevy::render::render_resource::AsBindGroup;
 use bevy::shader::ShaderRef;
 
 use crate::app::camera::WorldCamera;
@@ -27,7 +26,7 @@ use crate::ui::UiFont;
 
 use super::isometric::{WORLD_TILE_SIZE, tile_elevation};
 use super::sprites::{spawn_crops, spawn_items, spawn_objects};
-use super::textures::TileTextures;
+use super::textures::TextureAtlases;
 
 /// Сторона terrain-блока в тайлах. 64 делит все поддерживаемые размеры мира.
 pub(crate) const BLOCK_TILES: i32 = 64;
@@ -39,26 +38,7 @@ pub(crate) const TARGET_CELL_PX: f32 = 2.0;
 /// Максимальный уровень детализации (ячейка 2^MAX_LOD тайлов).
 pub(crate) const MAX_LOD: u32 = 6;
 
-/// Размер одного тайла в исходных PNG.
-const ATLAS_TILE_PX: u32 = 32;
 
-/// Ширина повтора краёв вокруг тайла в атласе (защита от bleeding).
-const ATLAS_GUTTER_PX: u32 = 2;
-
-/// Сколько тайлов в атласе по горизонтали и вертикали.
-const ATLAS_COLUMNS: u32 = 4;
-const ATLAS_ROWS: u32 = 4;
-
-/// Размер ячейки атласа с учётом повтора краёв.
-const ATLAS_CELL_PX: u32 = ATLAS_TILE_PX + ATLAS_GUTTER_PX * 2;
-
-/// Полный размер атласа.
-const ATLAS_WIDTH: u32 = ATLAS_CELL_PX * ATLAS_COLUMNS;
-const ATLAS_HEIGHT: u32 = ATLAS_CELL_PX * ATLAS_ROWS;
-
-/// Количество непустых видов тайлов (индексы атласа). Варианты идут
-/// подряд за `Empty`, порядок совпадает с `TileType` без него.
-pub(crate) const TILE_KIND_COUNT: usize = 14;
 
 /// Сколько блоков строить за кадр при LOD 0 (дальше бюджет растёт).
 const BUILD_BLOCKS_BASE: usize = 4;
@@ -149,110 +129,24 @@ pub(crate) struct TerrainBlock;
 
 pub(crate) fn ensure_ground_material(
     mut render: ResMut<TerrainRender>,
-    textures: Res<TileTextures>,
-    mut images: ResMut<Assets<Image>>,
+    atlases: Option<Res<TextureAtlases>>,
     mut materials: ResMut<Assets<TerrainMaterial>>,
 ) {
     if render.material.is_some() {
         return;
     }
-    let Some(atlas) = build_atlas_image(&textures, &images) else {
+    let Some(atlases) = atlases else {
         return;
     };
-
-    let atlas = images.add(atlas);
     render.material = Some(materials.add(ExtendedMaterial {
         base: StandardMaterial {
-            base_color_texture: Some(atlas),
+            base_color_texture: Some(atlases.tiles.image.clone()),
             alpha_mode: AlphaMode::Opaque,
             unlit: true,
             ..default()
         },
         extension: TerrainLensExtension {},
     }));
-}
-
-/// Собирает атлас 4×4 из четырнадцати 32×32 тайлов с повтором краёв.
-/// Возвращает `None`, пока хотя бы одна исходная текстура не загружена.
-fn build_atlas_image(textures: &TileTextures, images: &Assets<Image>) -> Option<Image> {
-    let mut data = vec![0_u8; (ATLAS_WIDTH * ATLAS_HEIGHT * 4) as usize];
-
-    for (index, handle) in textures.atlas_sources().into_iter().enumerate() {
-        let image = images.get(handle)?;
-        let pixels = tile_pixels(image);
-        let fallback = kind_for_atlas_index(index as u8)
-            .map(|kind| color_to_rgba8(kind.placeholder_color()))
-            .unwrap_or([255, 0, 255, 255]);
-        write_atlas_cell(&mut data, index as u32, pixels, fallback);
-    }
-    let mut atlas = Image::new(
-        Extent3d {
-            width: ATLAS_WIDTH,
-            height: ATLAS_HEIGHT,
-            depth_or_array_layers: 1,
-        },
-        TextureDimension::D2,
-        data,
-        TextureFormat::Rgba8UnormSrgb,
-        RenderAssetUsages::RENDER_WORLD,
-    );
-    atlas.sampler = ImageSampler::nearest();
-    Some(atlas)
-}
-
-/// Проверяет формат и размер изображения и возвращает его RGBA8-пиксели.
-fn tile_pixels(image: &Image) -> Option<&[u8]> {
-    if image.texture_descriptor.format != TextureFormat::Rgba8UnormSrgb
-        || image.width() != ATLAS_TILE_PX || image.height() != ATLAS_TILE_PX
-    {
-        return None;
-    }
-    image.data.as_deref()
-}
-
-/// Записывает одну ячейку атласа и повторяет её края в гуттере.
-/// Если исходных пикселей нет, ячейка заливается запасным цветом.
-fn write_atlas_cell(data: &mut [u8], index: u32, pixels: Option<&[u8]>, fallback: [u8; 4]) {
-    let cell_x = (index % ATLAS_COLUMNS) * ATLAS_CELL_PX;
-    let cell_y = (index / ATLAS_COLUMNS) * ATLAS_CELL_PX;
-    let max_src = ATLAS_TILE_PX as i32 - 1;
-
-    for dy in 0..ATLAS_CELL_PX {
-        for dx in 0..ATLAS_CELL_PX {
-            let sx = (dx as i32 - ATLAS_GUTTER_PX as i32).clamp(0, max_src) as u32;
-            let sy = (dy as i32 - ATLAS_GUTTER_PX as i32).clamp(0, max_src) as u32;
-            let dst = (((cell_y + dy) * ATLAS_WIDTH + cell_x + dx) * 4) as usize;
-            let src = ((sy * ATLAS_TILE_PX + sx) * 4) as usize;
-            match pixels.and_then(|pixels| pixels.get(src..src + 4)) {
-                Some(pixel) => data[dst..dst + 4].copy_from_slice(pixel),
-                None => data[dst..dst + 4].copy_from_slice(&fallback),
-            }
-        }
-    }
-}
-
-/// Переводит цвет в байты RGBA8.
-fn color_to_rgba8(color: [f32; 4]) -> [u8; 4] {
-    [
-        (color[0].clamp(0.0, 1.0) * 255.0).round() as u8,
-        (color[1].clamp(0.0, 1.0) * 255.0).round() as u8,
-        (color[2].clamp(0.0, 1.0) * 255.0).round() as u8,
-        (color[3].clamp(0.0, 1.0) * 255.0).round() as u8,
-    ]
-}
-
-/// UV-прямоугольник тайла в атласе: `[u0, v0, u1, v1]`, где v0 — верх.
-pub(crate) fn atlas_uv(index: u8) -> [f32; 4] {
-    let col = index as u32 % ATLAS_COLUMNS;
-    let row = index as u32 / ATLAS_COLUMNS;
-    let x0 = col * ATLAS_CELL_PX + ATLAS_GUTTER_PX;
-    let y0 = row * ATLAS_CELL_PX + ATLAS_GUTTER_PX;
-    [
-        x0 as f32 / ATLAS_WIDTH as f32,
-        y0 as f32 / ATLAS_HEIGHT as f32,
-        (x0 + ATLAS_TILE_PX) as f32 / ATLAS_WIDTH as f32,
-        (y0 + ATLAS_TILE_PX) as f32 / ATLAS_HEIGHT as f32,
-    ]
 }
 
 /// Перерисовывает видимые блоки мира и их деревья.
@@ -265,8 +159,7 @@ pub(crate) fn render_world(
     mut materials: ResMut<Assets<StandardMaterial>>,
     terrain_materials: Res<Assets<TerrainMaterial>>,
     mut sprite_assets: ResMut<super::sprites::WorldSpriteAssets>,
-    images: Res<Assets<Image>>,
-    textures: Res<TileTextures>,
+    atlases: Option<Res<TextureAtlases>>,
     font: Res<UiFont>,
     camera: Query<(&Camera, &Transform, &Projection), With<WorldCamera>>,
     terrain_blocks: Query<&Children, With<TerrainBlock>>,
@@ -299,6 +192,9 @@ pub(crate) fn render_world(
     if terrain_materials.get(&material).is_none() {
         return;
     }
+    let Some(atlases) = atlases else {
+        return;
+    };
     let Ok((camera, camera_transform, projection)) = camera.single() else {
         return;
     };
@@ -311,8 +207,8 @@ pub(crate) fn render_world(
     // дочерними объектами.
     if !dirty.terrain.is_empty() {
         rebuild_dirty_blocks(
-            &mut commands, &mut meshes, &mut materials, &mut sprite_assets, &images, world,
-            &material, camera_transform.rotation, &textures, &font,
+            &mut commands, &mut meshes, &mut materials, &mut sprite_assets, world,
+            &material, camera_transform.rotation, &atlases, &font,
             &dirty.terrain, &mut render, &mut metrics, &lens_tints,
         );
     }
@@ -320,8 +216,8 @@ pub(crate) fn render_world(
     // пересобрать дочерние спрайты затронутых блоков.
     if !dirty.decor.is_empty() {
         refresh_decor(
-            &mut commands, &mut meshes, &mut materials, &mut sprite_assets, &images, world,
-            camera_transform.rotation, &textures, &font, &dirty.decor, &render,
+            &mut commands, &mut meshes, &mut materials, &mut sprite_assets, world,
+            camera_transform.rotation, &atlases, &font, &dirty.decor, &render,
         );
     }
     if ortho.area.width() <= 0.0 || ortho.area.height() <= 0.0 {
@@ -376,7 +272,7 @@ pub(crate) fn render_world(
             .active
             .entry(block)
             .or_insert_with(|| build_fallback_block(
-                &mut commands, &mut meshes, world, &material, block,
+                &mut commands, &mut meshes, world, &material, block, atlases.tile_uv(),
             ));
     }
 
@@ -416,8 +312,8 @@ pub(crate) fn render_world(
                 despawn_block(&mut commands, &mut meshes, old);
             }
             let built = build_block(
-                &mut commands, &mut meshes, &mut materials, &mut sprite_assets, &images, world,
-                &material, camera_transform.rotation, &textures, &font,
+                &mut commands, &mut meshes, &mut materials, &mut sprite_assets, world,
+                &material, camera_transform.rotation, &atlases, &font,
                 &mut metrics, block, lod, &lens_tints,
             );
             render.active.insert(block, built);
@@ -446,9 +342,9 @@ pub(crate) fn render_world(
                 continue;
             }
             let built = build_block(
-                &mut commands, &mut meshes, &mut materials, &mut sprite_assets, &images,
+                &mut commands, &mut meshes, &mut materials, &mut sprite_assets,
                 world, &material,
-                camera_transform.rotation, &textures, &font, &mut metrics, block, incoming_lod,
+                camera_transform.rotation, &atlases, &font, &mut metrics, block, incoming_lod,
                 &lens_tints,
             );
             commands.entity(built.entity).insert(Visibility::Hidden);
@@ -535,11 +431,10 @@ fn rebuild_dirty_blocks(
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
     sprite_assets: &mut super::sprites::WorldSpriteAssets,
-    images: &Assets<Image>,
     world: &World,
     material: &Handle<TerrainMaterial>,
     camera_rotation: Quat,
-    textures: &TileTextures,
+    atlases: &TextureAtlases,
     font: &Res<UiFont>,
     dirty: &[TilePos],
     render: &mut TerrainRender,
@@ -573,8 +468,8 @@ fn rebuild_dirty_blocks(
         if let Some(block) = render.active.remove(&pos) {
             despawn_block(commands, meshes, block);
             let built = build_block(
-                commands, meshes, materials, sprite_assets, images, world, material,
-                camera_rotation, textures, font, metrics, pos, render.lod,
+                commands, meshes, materials, sprite_assets, world, material,
+                camera_rotation, atlases, font, metrics, pos, render.lod,
                 lens_tints,
             );
             render.active.insert(pos, built);
@@ -595,8 +490,8 @@ fn rebuild_dirty_blocks(
                 despawn_block(commands, meshes, block);
                 let built =
                     build_block(
-                        commands, meshes, materials, sprite_assets, images, world,
-                        material, camera_rotation, textures, font, metrics, pos, lod,
+                        commands, meshes, materials, sprite_assets, world,
+                        material, camera_rotation, atlases, font, metrics, pos, lod,
                         lens_tints,
                     );
                 commands.entity(built.entity).insert(Visibility::Hidden);
@@ -617,10 +512,9 @@ fn refresh_decor(
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
     sprite_assets: &mut super::sprites::WorldSpriteAssets,
-    images: &Assets<Image>,
     world: &World,
     camera_rotation: Quat,
-    textures: &TileTextures,
+    atlases: &TextureAtlases,
     font: &Res<UiFont>,
     decor: &[TilePos],
     render: &TerrainRender,
@@ -635,14 +529,14 @@ fn refresh_decor(
     for block in blocks {
         if let Some(built) = render.active.get(&block) {
             refresh_block_decor(
-                built, commands, meshes, materials, sprite_assets, images, world,
-                camera_rotation, textures, font, block,
+                built, commands, meshes, materials, sprite_assets, world,
+                camera_rotation, atlases, font, block,
             );
         }
         if let Some(incoming) = render.incoming.as_ref() && let Some(built) = incoming.blocks.get(&block) {
             refresh_block_decor(
-                built, commands, meshes, materials, sprite_assets, images, world,
-                camera_rotation, textures, font, block,
+                built, commands, meshes, materials, sprite_assets, world,
+                camera_rotation, atlases, font, block,
             );
         }
     }
@@ -655,10 +549,9 @@ fn refresh_block_decor(
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
     sprite_assets: &mut super::sprites::WorldSpriteAssets,
-    images: &Assets<Image>,
     world: &World,
     camera_rotation: Quat,
-    textures: &TileTextures,
+    atlases: &TextureAtlases,
     font: &Res<UiFont>,
     block: BlockPos,
 ) {
@@ -671,13 +564,13 @@ fn refresh_block_decor(
     entity.despawn_related::<Children>();
     let origin = block_origin(block);
     spawn_objects(
-        &mut entity, meshes, materials, sprite_assets, images, world, block, origin, camera_rotation, textures,
+        &mut entity, meshes, materials, sprite_assets, world, block, origin, camera_rotation, atlases,
     );
     spawn_crops(
-        &mut entity, meshes, materials, sprite_assets, world, block, origin, textures,
+        &mut entity, meshes, materials, sprite_assets, world, block, origin, atlases,
     );
     spawn_items(
-        &mut entity, meshes, materials, sprite_assets, world, block, origin, camera_rotation, textures, &font.0,
+        &mut entity, meshes, materials, sprite_assets, world, block, origin, camera_rotation, atlases, &font.0,
     );
 }
 
@@ -695,11 +588,10 @@ fn build_block(
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
     sprite_assets: &mut super::sprites::WorldSpriteAssets,
-    images: &Assets<Image>,
     world: &World,
     material: &Handle<TerrainMaterial>,
     camera_rotation: Quat,
-    textures: &TileTextures,
+    atlases: &TextureAtlases,
     font: &Res<UiFont>,
     metrics: &mut RenderMetrics,
     block: BlockPos,
@@ -707,7 +599,7 @@ fn build_block(
     lens_tints: &HashMap<ChunkPos, [f32; 4]>,
 ) -> BuiltBlock {
     let started = std::time::Instant::now();
-    let mesh = build_block_mesh(world, block, lod).map(|mut mesh| {
+    let mesh = build_block_mesh(world, block, lod, atlases.tile_uv()).map(|mut mesh| {
         if lod <= 4 && block_has_lens_tint(block, lens_tints) {
             set_block_lens_colors(&mut mesh, block, lens_tints);
         }
@@ -727,13 +619,13 @@ fn build_block(
     // Объекты рисуются только на ближних LOD: дальше они мельче ячейки сетки.
     if lod <= 1 {
         spawn_objects(
-            &mut entity, meshes, materials, sprite_assets, images, world, block, origin, camera_rotation, textures,
+            &mut entity, meshes, materials, sprite_assets, world, block, origin, camera_rotation, atlases,
         );
         spawn_crops(
-            &mut entity, meshes, materials, sprite_assets, world, block, origin, textures,
+            &mut entity, meshes, materials, sprite_assets, world, block, origin, atlases,
         );
         spawn_items(
-            &mut entity, meshes, materials, sprite_assets, world, block, origin, camera_rotation, textures, &font.0,
+            &mut entity, meshes, materials, sprite_assets, world, block, origin, camera_rotation, atlases, &font.0,
         );
     }
     BuiltBlock {
@@ -764,8 +656,9 @@ fn build_fallback_block(
     world: &World,
     material: &Handle<TerrainMaterial>,
     block: BlockPos,
+    tile_uv: &[[f32; 4]],
 ) -> BuiltBlock {
-    let mesh = build_fallback_block_mesh(world, block).map(|mesh| meshes.add(mesh));
+    let mesh = build_fallback_block_mesh(world, block, tile_uv).map(|mesh| meshes.add(mesh));
     let mut entity = commands.spawn((
         Transform::from_translation(block_origin(block)),
         Visibility::default(),
@@ -782,12 +675,13 @@ fn build_fallback_block(
     }
 }
 
-fn build_fallback_block_mesh(world: &World, block: BlockPos) -> Option<Mesh> {
+fn build_fallback_block_mesh(world: &World, block: BlockPos, tile_uv: &[[f32; 4]]) -> Option<Mesh> {
     const SAMPLE_STEP: i32 = 8;
     let base_x = block.x * BLOCK_TILES;
     let base_y = block.y * BLOCK_TILES;
     let world_tiles = world.size.tiles() as i32;
-    let mut counts = [0_u32; TILE_KIND_COUNT];
+    let tile_kinds = TileType::non_empty_count();
+    let mut counts = vec![0_u32; tile_kinds];
 
     for y in (0..BLOCK_TILES).step_by(SAMPLE_STEP as usize) {
         for x in (0..BLOCK_TILES).step_by(SAMPLE_STEP as usize) {
@@ -826,7 +720,7 @@ fn build_fallback_block_mesh(world: &World, block: BlockPos) -> Option<Mesh> {
     mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, vec![[1.0; 4]; points.len()]);
     mesh.insert_attribute(
         Mesh::ATTRIBUTE_UV_0,
-        atlas_uv_coordinates(index).to_vec(),
+        atlas_uv_coordinates(tile_uv[index as usize]).to_vec(),
     );
     mesh.insert_indices(Indices::U32([0, 1, 2, 0, 2, 3].into()));
     // Нормали не считаем: материал terrain unlit (см. ensure_ground_material),
@@ -991,19 +885,29 @@ pub(crate) fn lod_transition_for(
 }
 
 /// Строит верх ячейки и грани перепада высоты, обращённые к фиксированной камере.
-pub(crate) fn build_block_mesh(world: &World, block: BlockPos, lod: u32) -> Option<Mesh> {
+pub(crate) fn build_block_mesh(
+    world: &World,
+    block: BlockPos,
+    lod: u32,
+    tile_uv: &[[f32; 4]],
+) -> Option<Mesh> {
     let cells = (BLOCK_TILES >> lod) as usize;
     let cell_tiles = 1_i32 << lod;
     let world_tiles = world.size.tiles() as i32;
     let base_x = block.x * BLOCK_TILES;
     let base_y = block.y * BLOCK_TILES;
+    let tile_kinds = TileType::non_empty_count();
+    // Один буфер счётчиков на весь блок: `cell_kind` очищает его на месте,
+    // поэтому горячий путь не выделяет память на каждую ячейку.
+    let mut counts = vec![0_u32; tile_kinds];
     let mut kinds = vec![None; cells * cells];
 
     for cy in 0..cells {
         for cx in 0..cells {
             let x0 = base_x + cx as i32 * cell_tiles;
             let y0 = base_y + cy as i32 * cell_tiles;
-            kinds[cy * cells + cx] = cell_kind(world, x0, y0, cell_tiles, world_tiles);
+            kinds[cy * cells + cx] =
+                cell_kind(world, x0, y0, cell_tiles, world_tiles, &mut counts);
         }
     }
     let mut positions = Vec::with_capacity(cells * cells * 20);
@@ -1041,7 +945,7 @@ pub(crate) fn build_block_mesh(world: &World, block: BlockPos, lod: u32) -> Opti
                     point(lx1, ly1, elevation),
                     point(lx0, ly1, elevation),
                 ],
-                atlas_uv_coordinates(index),
+                atlas_uv_coordinates(tile_uv[index as usize]),
             );
 
             let edges = [
@@ -1056,7 +960,14 @@ pub(crate) fn build_block_mesh(world: &World, block: BlockPos, lod: u32) -> Opti
                 {
                     kinds[ny as usize * cells + nx as usize]
                 } else {
-                    cell_kind(world, neighbor_x, neighbor_y, cell_tiles, world_tiles)
+                    cell_kind(
+                        world,
+                        neighbor_x,
+                        neighbor_y,
+                        cell_tiles,
+                        world_tiles,
+                        &mut counts,
+                    )
                 };
                 let neighbor_elevation = neighbor_kind.map(tile_elevation).unwrap_or(0.0);
                 if neighbor_elevation >= elevation {
@@ -1076,7 +987,7 @@ pub(crate) fn build_block_mesh(world: &World, block: BlockPos, lod: u32) -> Opti
                         point(lx0, ly0, elevation),
                     ],
                 };
-                push_quad(wall, atlas_uv_coordinates(index));
+                push_quad(wall, atlas_uv_coordinates(tile_uv[index as usize]));
             }
         }
     }
@@ -1118,7 +1029,7 @@ pub(crate) fn set_block_lens_colors(
     let block_x = (block.x * BLOCK_TILES) as f32;
     let block_y = (block.y * BLOCK_TILES) as f32;
     let mut colors = Vec::with_capacity(positions.len());
-    for quad in positions.chunks_exact(4) {
+    for quad in positions.as_chunks::<4>().0 {
         let center_x = quad.iter().map(|point| point[0]).sum::<f32>()
             / (4.0 * WORLD_TILE_SIZE)
             + block_x
@@ -1141,16 +1052,23 @@ pub(crate) fn set_block_lens_colors(
     mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
 }
 
-fn atlas_uv_coordinates(index: u8) -> [[f32; 2]; 4] {
-    let [u0, v0, u1, v1] = atlas_uv(index);
+fn atlas_uv_coordinates(uv: [f32; 4]) -> [[f32; 2]; 4] {
+    let [u0, v0, u1, v1] = uv;
     [[u0, v1], [u1, v1], [u1, v0], [u0, v0]]
 }
 
-fn cell_kind(world: &World, x0: i32, y0: i32, cell: i32, world_tiles: i32) -> Option<TileType> {
+fn cell_kind(
+    world: &World,
+    x0: i32,
+    y0: i32,
+    cell: i32,
+    world_tiles: i32,
+    counts: &mut [u32],
+) -> Option<TileType> {
     if let Some(index) = uniform_cell_index(world, x0, y0, cell, world_tiles) {
         return kind_for_atlas_index(index);
     }
-    let mut counts = [0_u32; TILE_KIND_COUNT];
+    counts.fill(0);
     for y in y0..y0 + cell {
         for x in x0..x0 + cell {
             if x < 0 || y < 0 || x >= world_tiles || y >= world_tiles {
@@ -1161,7 +1079,7 @@ fn cell_kind(world: &World, x0: i32, y0: i32, cell: i32, world_tiles: i32) -> Op
             }
         }
     }
-    dominant_atlas_index(&counts).and_then(kind_for_atlas_index)
+    dominant_atlas_index(counts).and_then(kind_for_atlas_index)
 }
 
 /// Если ячейка `[x0, x0+cell) × [y0, y0+cell)` целиком лежит внутри мира
@@ -1189,7 +1107,7 @@ fn uniform_cell_index(world: &World, x0: i32, y0: i32, cell: i32, world_tiles: i
 }
 
 /// Выбирает самый частый индекс тайла; при равенстве — меньший индекс.
-pub(crate) fn dominant_atlas_index(counts: &[u32; TILE_KIND_COUNT]) -> Option<u8> {
+pub(crate) fn dominant_atlas_index(counts: &[u32]) -> Option<u8> {
     let mut best: Option<(u8, u32)> = None;
     for (index, &count) in counts.iter().enumerate() {
         if count == 0 {

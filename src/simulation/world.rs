@@ -10,6 +10,7 @@ use super::entities::EntityStore;
 use super::item_entity::{ItemEntities, ItemEntity};
 use super::items::ItemStack;
 use super::objects::WorldObject;
+#[allow(unused_imports)]
 use super::tile::{ResourceKind, Tile, TileType};
 
 /// Размер мира в тайлах по стороне.
@@ -93,7 +94,6 @@ impl WorldPos {
 pub struct World {
     pub size: WorldSize,
     /// Seed, которым мир сгенерирован; понадобится сохранениям.
-    #[allow(dead_code)]
     pub seed: u64,
     pub chunks_per_side: u32,
     pub chunks: Vec<Chunk>,
@@ -103,7 +103,6 @@ pub struct World {
     /// суток, `simulation/climate.rs`) и обновляется app-слоем каждый тик.
     /// Локальный климат появится вместе с погодой. Читают UI и будущие
     /// потребности.
-    #[allow(dead_code)]
     pub ambient_temperature_c: f32,
     /// Снаряды в полёте (стрелы, брошенные копья) — см. `combat`.
     pub projectiles: Vec<Projectile>,
@@ -197,10 +196,11 @@ impl World {
         &mut self.chunks[idx]
     }
 
-    /// Плоский вид тайла (рельеф + ресурс), собираемый из слоёв на лету.
-    /// View-доступ для UI и тестов; для горячего обхода рельефа используй
-    /// `terrain_kind` — он не трогает разреженные слои.
-    #[allow(dead_code)] // view-доступ по ARCHITECTURE 2.3, активные пользователи — впереди
+    // Плоский вид тайла (рельеф + ресурс), собираемый из слоёв на лету.
+    // View-доступ для UI и тестов; для горячего обхода рельефа используем
+    // `terrain_kind` — он не трогает разреженные слои.
+    // view-доступ по ARCHITECTURE 2.3, активные пользователи — впереди
+    /*
     pub fn tile(&self, pos: TilePos) -> Tile {
         let (cpos, idx) = split_tile_pos(pos);
         let chunk = self.chunk(cpos);
@@ -214,7 +214,7 @@ impl World {
             resource,
             amount,
         }
-    }
+    } */
 
     /// Вид тайла без ресурса — только рельеф. Горячий путь для меша и генерации.
     pub fn terrain_kind(&self, pos: TilePos) -> TileType {
@@ -302,7 +302,7 @@ impl World {
     }
 
     /// Контейнер станции на тайле, если есть.
-    #[allow(dead_code)] // читается UI станций и тестами
+    /// читается UI станций и тестами.
     pub fn container_at(&self, pos: TilePos) -> Option<&Container> {
         let (cpos, idx) = split_tile_pos(pos);
         self.chunk(cpos).containers.get(&idx)

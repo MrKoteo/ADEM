@@ -9,7 +9,7 @@ use bevy::prelude::*;
 use crate::rendering::isometric::{
     WORLD_TILE_SIZE, ground_position_from_viewport, terrain_tile_from_viewport,
 };
-use crate::rendering::{EntitySpriteVisuals, TileTextures, entity_sprite_size};
+use crate::rendering::{EntitySpriteVisuals, TextureAtlases, entity_sprite_size};
 use crate::simulation::{TilePos, World, TILE_SIZE};
 
 /// Радиус выделения существа курсором, тайлов (задача «инспектор»):
@@ -64,7 +64,7 @@ pub(crate) fn entity_at(
     world: &World,
     window: &Window,
     cameras: &Query<(&Camera, &Transform), With<Camera2d>>,
-    textures: &TileTextures,
+    atlases: &TextureAtlases,
     visuals: &EntitySpriteVisuals,
 ) -> Option<u64> {
     let cursor = window.cursor_position()?;
@@ -93,7 +93,7 @@ pub(crate) fn entity_at(
         // Границы ещё не отсканированы (текстура не догрузилась) — существо
         // пропускается до ближайшего кадра: спрайт к этому моменту тоже
         // ещё не отрисован.
-        let Some(bounds) = visuals.bounds(textures.entity_texture(entity).id()) else {
+        let Some(bounds) = visuals.bounds(atlases.entity(entity)) else {
             continue;
         };
         let size = entity_sprite_size(entity.kind);

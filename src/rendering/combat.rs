@@ -20,7 +20,7 @@ use crate::rendering::isometric::{WORLD_TILE_SIZE, world_position};
 use crate::simulation::time::TICKS_PER_SEC;
 use crate::simulation::{ItemKind, ProjectileKind, StuckSpear, TILE_SIZE};
 
-use super::textures::TileTextures;
+use super::textures::{AtlasTexture, TextureAtlases};
 
 // ---------- Эффекты оружия ----------
 
@@ -110,7 +110,7 @@ fn spawn_weapon_fx(
     mut fx: ResMut<SwingFx>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
-    textures: Res<TileTextures>,
+    atlases: Option<Res<TextureAtlases>>,
     cameras: Query<&Transform, With<Camera2d>>,
     overlay: Query<(Entity, &WeaponFxEffect)>,
     mut commands: Commands,
@@ -119,6 +119,9 @@ fn spawn_weapon_fx(
         .mesh
         .get_or_insert_with(|| meshes.add(build_swing_mesh()))
         .clone();
+    let Some(atlases) = atlases else {
+        return;
+    };
     let Ok(camera_transform) = cameras.single() else {
         return;
     };
@@ -171,15 +174,11 @@ fn spawn_weapon_fx(
                 // часовой и вдвое меньший размер.
                 let (kind_texture, size, extra_rotation) = match fx_msg.kind {
                     WeaponFxKind::Thrust => (
-                        textures.item_texture(ItemKind::SpearPrimal),
+                        atlases.item(ItemKind::SpearPrimal),
                         THRUST_SPRITE_TILES,
                         0.0,
                     ),
-                    _ => (
-                        textures.item_texture(ItemKind::Bow),
-                        BOW_SPRITE_TILES,
-                        BOW_EXTRA_ROTATION,
-                    ),
+                    _ => (atlases.item(ItemKind::Bow), BOW_SPRITE_TILES, BOW_EXTRA_ROTATION),
                 };
                 let rotation = aim_angle - SPRITE_ANGLE_OFFSET + extra_rotation;
                 // Оружие хранит поднятый origin: все дальнейшие кадры
@@ -187,11 +186,7 @@ fn spawn_weapon_fx(
                 let weapon_origin =
                     origin + camera_rotation * (Vec3::Z * FX_Z_LIFT + Vec3::Y * WEAPON_HAND_LIFT);
                 commands.spawn((
-                    Sprite {
-                        image: kind_texture.clone(),
-                        custom_size: Some(Vec2::splat(TILE_SIZE * size)),
-                        ..default()
-                    },
+                    atlas_sprite(&atlases, kind_texture, Vec2::splat(TILE_SIZE * size)),
                     Transform::from_translation(weapon_origin)
                         .with_rotation(camera_rotation * Quat::from_rotation_z(rotation)),
                     WeaponFxEffect {
@@ -369,7 +364,7 @@ fn update_projectile_sprites(
     mut commands: Commands,
     state: Res<GameState>,
     cameras: Query<(&Camera, &Transform, &Projection), With<Camera2d>>,
-    textures: Res<TileTextures>,
+    atlases: Option<Res<TextureAtlases>>,
     mut fx: ResMut<ProjectileFx>,
     mut sprites: ResMut<ProjectileSprites>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -379,6 +374,9 @@ fn update_projectile_sprites(
         for (_, entity) in sprites.map.drain() {
             commands.entity(entity).despawn();
         }
+        return;
+    };
+    let Some(atlases) = atlases else {
         return;
     };
     let Ok((camera, camera_transform, projection)) = cameras.single() else {
@@ -463,11 +461,11 @@ fn update_projectile_sprites(
                 }
             }
             ProjectileKind::ThrownSpear => {
-                let sprite = Sprite {
-                    image: textures.item_texture(ItemKind::SpearPrimal).clone(),
-                    custom_size: Some(Vec2::splat(TILE_SIZE * THROWN_SPEAR_SPRITE_TILES)),
-                    ..default()
-                };
+                let sprite = atlas_sprite(
+                    &atlases,
+                    atlases.item(ItemKind::SpearPrimal),
+                    Vec2::splat(TILE_SIZE * THROWN_SPEAR_SPRITE_TILES),
+                );
                 let transform = Transform::from_translation(world_pos).with_rotation(
                     camera_rotation
                         * Quat::from_rotation_z(screen_heading - SPRITE_ANGLE_OFFSET),
@@ -506,13 +504,16 @@ fn update_stuck_spear_sprites(
     mut commands: Commands,
     state: Res<GameState>,
     cameras: Query<(&Camera, &Transform), With<Camera2d>>,
-    textures: Res<TileTextures>,
+    atlases: Option<Res<TextureAtlases>>,
     mut sprites: ResMut<StuckSpearSprites>,
 ) {
     let Some(world) = state.world.as_ref() else {
         for (_, entity) in sprites.map.drain() {
             commands.entity(entity).despawn();
         }
+        return;
+    };
+    let Some(atlases) = atlases else {
         return;
     };
     let Ok((camera, camera_transform)) = cameras.single() else {
@@ -547,11 +548,11 @@ fn update_stuck_spear_sprites(
         // показан лёгким «укорачиванием» спрайта: чем отвеснее падение,
         // тем короче видимая проекция.
         let steep = (spear.pitch / std::f32::consts::FRAC_PI_2).clamp(0.0, 1.0);
-        let sprite = Sprite {
-            image: textures.item_texture(ItemKind::SpearPrimal).clone(),
-            custom_size: Some(Vec2::splat(TILE_SIZE * 1.4 * (1.0 - steep * 0.35))),
-            ..default()
-        };
+        let sprite = atlas_sprite(
+            &atlases,
+            atlases.item(ItemKind::SpearPrimal),
+            Vec2::splat(TILE_SIZE * 1.4 * (1.0 - steep * 0.35)),
+        );
         let heading_vector = camera_rotation.inverse()
             * Vec3::new(spear.heading.cos(), spear.heading.sin(), 0.0);
         let screen_heading = heading_vector.y.atan2(heading_vector.x);
@@ -580,6 +581,19 @@ fn update_stuck_spear_sprites(
         if let Some(entity) = sprites.map.remove(&key) {
             commands.entity(entity).despawn();
         }
+    }
+}
+
+/// 2D-спрайт из атласа: изображение атласа + его секция.
+fn atlas_sprite(atlases: &TextureAtlases, texture: AtlasTexture, size: Vec2) -> Sprite {
+    Sprite {
+        image: atlases.image(texture).clone(),
+        texture_atlas: Some(TextureAtlas {
+            layout: atlases.layout(texture).clone(),
+            index: texture.index as usize,
+        }),
+        custom_size: Some(size),
+        ..default()
     }
 }
 

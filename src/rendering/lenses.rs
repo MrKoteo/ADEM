@@ -169,10 +169,8 @@ fn recolor_block(
     if block.fallback || block.lod > 4 {
         return;
     }
-    if let Some(handle) = &block.mesh {
-        if let Some(mut mesh) = meshes.get_mut(handle) {
-            set_block_lens_colors(&mut mesh, position, tints);
-        }
+    if let Some(handle) = &block.mesh && let Some(mut mesh) = meshes.get_mut(handle) {
+        set_block_lens_colors(&mut mesh, position, tints);
     }
 }
 

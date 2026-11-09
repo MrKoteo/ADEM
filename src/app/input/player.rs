@@ -11,7 +11,7 @@ use bevy::ui_widgets::TextInput;
 use crate::app::settings::{ControlAction, Settings};
 use crate::app::state::{ClockRes, CommandQueueRes, GameMode, GameState, MenuKind};
 use crate::app::input::{PlayerInput, WeaponFx, WeaponFxKind, move_dir, player_grid_dir};
-use crate::rendering::{EntitySpriteVisuals, TileTextures};
+use crate::rendering::{EntitySpriteVisuals, TextureAtlases};
 use crate::simulation::actions;
 use crate::simulation::commands::Command;
 use crate::simulation::crops::CropKind;
@@ -54,7 +54,7 @@ pub(crate) fn toggle_player_mode(
     capture: Res<BindingCapture>,
     focus: Res<InputFocus>,
     text_inputs: Query<(), With<TextInput>>,
-    textures: Res<TileTextures>,
+    atlases: Option<Res<TextureAtlases>>,
     visuals: Res<EntitySpriteVisuals>,
 ) {
     if !keys.just_pressed(KeyCode::F1) {
@@ -89,7 +89,10 @@ pub(crate) fn toggle_player_mode(
             let Some(world) = state.world.as_ref() else {
                 return;
             };
-            let Some(id) = entity_at(world, window, &cameras, &textures, &visuals) else {
+            let Some(atlases) = atlases.as_deref() else {
+                return;
+            };
+            let Some(id) = entity_at(world, window, &cameras, atlases, &visuals) else {
                 return;
             };
             state.set_controlled(Some(id));

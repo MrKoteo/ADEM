@@ -2,9 +2,29 @@
 //! а также UI-виджеты, не требующие графики (EditableText).
 
 use crate::rendering::{
-    BlockPos, TILE_KIND_COUNT, atlas_uv, build_block_mesh, dominant_atlas_index, lod_for_scale,
-    tile_atlas_index,
+    BlockPos, build_block_mesh, dominant_atlas_index, lod_for_scale,
 };
+
+/// UV-таблица тестового атласа тайлов: чистые тесты сборки меша не грузят
+/// PNG, но обязаны передать корректную раскладку. Сетка 4×4, ячейка 36 px.
+fn tile_uv_table() -> Vec<[f32; 4]> {
+    const CELL: u32 = 36;
+    const SIZE: f32 = 4.0 * CELL as f32;
+    (0..crate::simulation::tile::TileType::non_empty_count())
+        .map(|index| {
+            let col = index as u32 % 4;
+            let row = index as u32 / 4;
+            let x = col * CELL + 2;
+            let y = row * CELL + 2;
+            [
+                x as f32 / SIZE,
+                y as f32 / SIZE,
+                (x + 32) as f32 / SIZE,
+                (y + 32) as f32 / SIZE,
+            ]
+        })
+        .collect()
+}
 use crate::simulation::generation::generate_world;
 use crate::simulation::tile::TileType;
 use crate::simulation::world::WorldSize;
@@ -45,7 +65,7 @@ fn item_count_labels_obey_screen_size_and_lod() {
 /// Доминирующий тайл игнорирует пустые клетки, при равенстве берёт меньший индекс.
 #[test]
 fn dominant_tile_aggregation() {
-    let mut counts = [0_u32; TILE_KIND_COUNT];
+    let mut counts = vec![0_u32; crate::simulation::tile::TileType::non_empty_count()];
     assert_eq!(dominant_atlas_index(&counts), None);
     counts[3] = 2;
     counts[6] = 5;
@@ -57,11 +77,11 @@ fn dominant_tile_aggregation() {
 // Индексы атласа: Empty не рисуется, остальные виды идут подряд.
 //#[test]
 
-/// UV-прямоугольники тайлов лежат внутри атласа и не вырождены.
+/// UV-прямоугольники тестовой раскладки лежат внутри атласа и не вырождены.
 #[test]
-fn atlas_uv_stays_inside_texture() {
-    for index in 0..TILE_KIND_COUNT {
-        let [u0, v0, u1, v1] = atlas_uv(index as u8);
+fn tile_uv_stays_inside_texture() {
+    for (index, uv) in tile_uv_table().iter().enumerate() {
+        let [u0, v0, u1, v1] = *uv;
         assert!(0.0 <= u0 && u0 < u1 && u1 <= 1.0, "битый U-диапазон: {index}");
         assert!(0.0 <= v0 && v0 < v1 && v1 <= 1.0, "битый V-диапазон: {index}");
     }
@@ -73,13 +93,15 @@ fn atlas_uv_stays_inside_texture() {
 fn block_mesh_quad_count_matches_lod() {
     let world = generate_world(WorldSize::new(256), 42);
 
-    let mesh = build_block_mesh(&world, BlockPos { x: 0, y: 0 }, 0).expect("LOD 0");
+    let mesh = build_block_mesh(&world, BlockPos { x: 0, y: 0 }, 0, &tile_uv_table())
+        .expect("LOD 0");
     assert!(mesh.count_vertices() >= 64 * 64 * 4);
     assert!(
         mesh.indices().is_some_and(|indices| indices.len() >= 64 * 64 * 6)
     );
 
-    let mesh = build_block_mesh(&world, BlockPos { x: 0, y: 0 }, 3).expect("LOD 3");
+    let mesh = build_block_mesh(&world, BlockPos { x: 0, y: 0 }, 3, &tile_uv_table())
+        .expect("LOD 3");
     assert!(mesh.count_vertices() >= 8 * 8 * 4);
     assert!(
         mesh.indices().is_some_and(|indices| indices.len() >= 8 * 8 * 6)
@@ -112,7 +134,8 @@ fn elevated_tile_mesh_has_top_and_camera_facing_sides() {
 
     let mut world = World::new(WorldSize::new(256), 1);
     world.set_terrain(TilePos { x: 0, y: 0 }, TileType::Mountain);
-    let mesh = build_block_mesh(&world, BlockPos { x: 0, y: 0 }, 0).expect("mountain tile");
+    let mesh = build_block_mesh(&world, BlockPos { x: 0, y: 0 }, 0, &tile_uv_table())
+        .expect("mountain tile");
 
     // The fixed camera sees only the negative X and negative Y walls.
     assert_eq!(mesh.count_vertices(), 12);
@@ -127,8 +150,10 @@ fn adjacent_equal_height_tiles_do_not_create_internal_walls() {
     world.set_terrain(TilePos { x: 63, y: 0 }, TileType::Mountain);
     world.set_terrain(TilePos { x: 64, y: 0 }, TileType::Mountain);
 
-    let left = build_block_mesh(&world, BlockPos { x: 0, y: 0 }, 0).expect("left mountain");
-    let right = build_block_mesh(&world, BlockPos { x: 1, y: 0 }, 0).expect("right mountain");
+    let left = build_block_mesh(&world, BlockPos { x: 0, y: 0 }, 0, &tile_uv_table())
+        .expect("left mountain");
+    let right = build_block_mesh(&world, BlockPos { x: 1, y: 0 }, 0, &tile_uv_table())
+        .expect("right mountain");
 
     // Two tops and three visible outside walls; the shared edge crosses a block boundary.
     assert_eq!(left.count_vertices() + right.count_vertices(), 20);
@@ -152,7 +177,7 @@ fn lod_transition_decisions() {
 fn block_mesh_handles_partial_edge_block() {
     // 288 тайлов = 4.5 блока по 64: последний ряд и колонка частичные.
     let world = generate_world(WorldSize::new(288), 7);
-    let mesh = build_block_mesh(&world, BlockPos { x: 4, y: 4 }, 0);
+    let mesh = build_block_mesh(&world, BlockPos { x: 4, y: 4 }, 0, &tile_uv_table());
     assert!(mesh.is_some(), "частичный блок должен строиться");
 }
 
@@ -264,13 +289,14 @@ fn outline_image_canvas_padding() {
 }
 
 /// Радиус дилатации компенсирует плотность пикселей текстуры: контур
-/// одной мировой толщины у человека и волка (128 текселей на 32 мировых), минимум — один тексель.
+/// одной мировой толщины у человека (128 текселей на 16 мировых) и волка
+/// (128 на 32), минимум — один тексель.
 #[test]
 fn outline_radius_matches_texel_density() {
     use crate::rendering::{OUTLINE_THICKNESS_PX, outline_radius_texels};
     let human = outline_radius_texels(128, 16.0);
     let wolf = outline_radius_texels(128, 32.0);
-    assert_eq!(human, (OUTLINE_THICKNESS_PX * 16.0).round() as u32);
+    assert_eq!(human, (OUTLINE_THICKNESS_PX * 8.0).round() as u32);
     assert_eq!(wolf, (OUTLINE_THICKNESS_PX * 4.0).round() as u32);
     assert!(human > wolf, "более плотная текстура — больший радиус");
     assert_eq!(outline_radius_texels(1, 1000.0), 1, "минимум один тексель");

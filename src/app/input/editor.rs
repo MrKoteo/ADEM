@@ -7,7 +7,7 @@ use bevy::input::mouse::{MouseButton, MouseMotion};
 use bevy::prelude::*;
 
 use crate::app::state::{CommandQueueRes, EditorSelection, GameMode, GameState, ToolCategory, WindowFocusState};
-use crate::rendering::{EntitySpriteVisuals, TileTextures};
+use crate::rendering::{EntitySpriteVisuals, TextureAtlases};
 use crate::simulation::commands::Command;
 use crate::simulation::objects::{ObjectKind, WorldObject};
 use crate::simulation::world::WorldPos;
@@ -51,7 +51,7 @@ pub(crate) fn editor_delete_input(
     mut queue: ResMut<CommandQueueRes>,
     cameras: Query<(&Camera, &Transform), With<Camera2d>>,
     blockers: Query<(&ComputedNode, &UiGlobalTransform, &Visibility), With<BlocksWorldInput>>,
-    textures: Res<TileTextures>,
+    atlases: Option<Res<TextureAtlases>>,
     visuals: Res<EntitySpriteVisuals>,
     mut drag_distance: Local<Option<f32>>,
 ) {
@@ -113,7 +113,10 @@ pub(crate) fn editor_delete_input(
             }
         }
         DeleteClass::Entities => {
-            if let Some(id) = entity_at(world, window, &cameras, &textures, &visuals) {
+            let Some(atlases) = atlases.as_deref() else {
+                return;
+            };
+            if let Some(id) = entity_at(world, window, &cameras, atlases, &visuals) {
                 queue.0.push(Command::RemoveEntity { id });
             }
         }
@@ -133,7 +136,7 @@ pub(crate) fn editor_entity_drag(
     mut queue: ResMut<CommandQueueRes>,
     cameras: Query<(&Camera, &Transform), With<Camera2d>>,
     blockers: Query<(&ComputedNode, &UiGlobalTransform, &Visibility), With<BlocksWorldInput>>,
-    textures: Res<TileTextures>,
+    atlases: Option<Res<TextureAtlases>>,
     visuals: Res<EntitySpriteVisuals>,
     mut dragged: Local<Option<u64>>,
     // Накопленное движение мыши с момента нажатия СКМ: клик без
@@ -155,6 +158,12 @@ pub(crate) fn editor_entity_drag(
         *dragged = None;
         return;
     };
+    // Атлас ещё не собран (первые кадры после загрузки): пикинг по
+    // альфа-границам невозможен, подсветку снимаем.
+    let Some(atlases) = atlases.as_deref() else {
+        selection.hovered = None;
+        return;
+    };
 
     // Наведение: существо под курсором (не над UI) подсвечивается белым
     // контуром. Пересчёт только в наблюдателе — в игре выделения нет.
@@ -164,7 +173,7 @@ pub(crate) fn editor_entity_drag(
         state
             .world
             .as_ref()
-            .and_then(|world| entity_at(world, window, &cameras, &textures, &visuals))
+            .and_then(|world| entity_at(world, window, &cameras, atlases, &visuals))
     };
 
     // Нажатие на существо начинает перетаскивание. Клик мимо — ничего.
@@ -180,7 +189,7 @@ pub(crate) fn editor_entity_drag(
         if cursor_world_pos(window, &cameras, world).is_none() {
             return;
         }
-        *dragged = entity_at(world, window, &cameras, &textures, &visuals);
+        *dragged = entity_at(world, window, &cameras, atlases, &visuals);
     }
     // Дрожание руки при клике не должно открывать инспектор вместо
     // перетаскивания: порог тот же, что у удаления ПКМ.

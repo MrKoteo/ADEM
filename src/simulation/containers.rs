@@ -155,7 +155,7 @@ impl Container {
             None => false,
         }
     }
-    /// Горит ли станция сейчас (для текстуры front_on в рендере).
+    /// Горит ли станция сейчас (индикатор пламени в UI станции).
     pub fn is_lit(&self) -> bool {
         self.burn_out_tick.is_some()
     }

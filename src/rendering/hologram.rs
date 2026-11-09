@@ -11,12 +11,15 @@ use crate::app::state::{GameMode, GameState};
 use crate::simulation::actions::reachable;
 use crate::simulation::commands::buildable_at;
 use crate::simulation::objects::build_cost;
-use crate::simulation::{BuildingKind, TILE_SIZE};
+use crate::simulation::{BuildingKind, ObjectKind, TILE_SIZE};
 use crate::ui::construction::ConstructionUi;
 
 use super::isometric::{WORLD_TILE_SIZE, world_position};
-use super::sprites::{DECAL_Z_OFFSET, STATION_BLOCK_HEIGHT, STATION_BLOCK_SCALE, world_sprite_quad};
-use super::textures::TileTextures;
+use super::sprites::{
+    DECAL_Z_OFFSET, OBJECT_SPRITE_SCREEN_DROP_PX, ground_screen_vertical_offset,
+    object_sprite_size, sprite_mesh,
+};
+use super::textures::{AtlasTexture, TextureAtlases};
 
 /// Маркер голограммы выбранной постройки.
 #[derive(Component)]
@@ -38,7 +41,7 @@ pub(crate) fn update_build_hologram(
     mut commands: Commands,
     state: Res<GameState>,
     construction: Res<ConstructionUi>,
-    textures: Res<TileTextures>,
+    atlases: Option<Res<TextureAtlases>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut sprite_assets: ResMut<super::sprites::WorldSpriteAssets>,
@@ -64,6 +67,9 @@ pub(crate) fn update_build_hologram(
     };
 
     let Ok(window) = windows.single() else {
+        return;
+    };
+    let Some(atlases) = atlases else {
         return;
     };
     let Ok((_, camera_transform, projection)) = cameras.single() else {
@@ -103,7 +109,6 @@ pub(crate) fn update_build_hologram(
         commands.entity(entity).despawn_related::<Children>();
         commands.entity(entity).despawn();
     }
-    let quad = world_sprite_quad(&mut meshes, &mut sprite_assets);
     commands
         .spawn((
             Transform::from_translation(anchor),
@@ -115,7 +120,16 @@ pub(crate) fn update_build_hologram(
             BuildHologram,
         ))
         .with_children(|root| {
-            spawn_hologram_building(root, &quad, &mut sprite_assets, &mut materials, &textures, kind, valid);
+            spawn_hologram_building(
+                root,
+                &mut meshes,
+                &mut sprite_assets,
+                &mut materials,
+                &atlases,
+                camera_transform.rotation,
+                kind,
+                valid,
+            );
         });
 }
 
@@ -125,12 +139,14 @@ pub(crate) fn update_build_hologram(
 fn hologram_material(
     sprite_assets: &mut super::sprites::WorldSpriteAssets,
     materials: &mut Assets<StandardMaterial>,
-    texture: &Handle<Image>,
+    atlases: &TextureAtlases,
+    texture: AtlasTexture,
     valid: bool,
 ) -> Handle<StandardMaterial> {
+    let kind = texture.kind;
     sprite_assets
         .hologram_materials
-        .entry((texture.id(), valid))
+        .entry((kind, valid))
         .or_insert_with(|| {
             let tint = if valid {
                 Color::srgba(0.45, 1.0, 0.45, 0.55)
@@ -139,7 +155,7 @@ fn hologram_material(
             };
             materials.add(StandardMaterial {
                 base_color: tint,
-                base_color_texture: Some(texture.clone()),
+                base_color_texture: Some(atlases.atlas(kind).image.clone()),
                 alpha_mode: AlphaMode::Blend,
                 cull_mode: None,
                 unlit: true,
@@ -163,28 +179,37 @@ fn hologram_quad(
 /// `spawn_objects`, но с материалами-тинтами.
 fn spawn_hologram_building(
     parent: &mut ChildSpawnerCommands,
-    quad: &Handle<Mesh>,
+    meshes: &mut Assets<Mesh>,
     sprite_assets: &mut super::sprites::WorldSpriteAssets,
     materials: &mut Assets<StandardMaterial>,
-    textures: &TileTextures,
+    atlases: &TextureAtlases,
+    camera_rotation: Quat,
     kind: BuildingKind,
     valid: bool,
 ) {
     match kind {
         // Костёр — крест из двух вертикальных квадов вдоль осей X и Y.
         BuildingKind::Campfire => {
-            let material = hologram_material(sprite_assets, materials, textures.campfire_cross(), valid);
+            let texture = atlases.campfire_cross();
+            let mesh = sprite_mesh(atlases, texture, meshes, sprite_assets);
+            let material = hologram_material(
+                sprite_assets,
+                materials,
+                atlases,
+                texture,
+                valid,
+            );
             let edge = WORLD_TILE_SIZE;
             let height = TILE_SIZE * 0.6;
             let center = Vec3::Z * (height * 0.5);
             hologram_quad(
-                parent, quad, material.clone(),
+                parent, &mesh, material.clone(),
                 Transform::from_translation(center)
                     .with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2))
                     .with_scale(Vec3::new(edge, height, 1.0)),
             );
             hologram_quad(
-                parent, quad, material,
+                parent, &mesh, material,
                 Transform::from_translation(center)
                     .with_rotation(
                         Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)
@@ -195,39 +220,40 @@ fn spawn_hologram_building(
         }
         // Склад — плоская декаль на поверхности тайла.
         BuildingKind::Storage => {
-            let material = hologram_material(sprite_assets, materials, textures.storage_flat(), valid);
+            let texture = atlases.storage_flat();
+            let mesh = sprite_mesh(atlases, texture, meshes, sprite_assets);
+            let material = hologram_material(
+                sprite_assets,
+                materials,
+                atlases,
+                texture,
+                valid,
+            );
             let edge = WORLD_TILE_SIZE;
             hologram_quad(
-                parent, quad, material,
+                parent, &mesh, material,
                 Transform::from_translation(Vec3::Z * DECAL_Z_OFFSET)
                     .with_scale(Vec3::new(edge, edge, 1.0)),
             );
         }
-        // Остальные станции — изометрический блок: верх + видимые грани.
+        // Остальные постройки — плоский спрайт, как у настоящей постройки.
         kind => {
-            let station = textures.station_textures(kind);
-            let edge = WORLD_TILE_SIZE * STATION_BLOCK_SCALE;
-            let half = edge * 0.5;
-            let height = STATION_BLOCK_HEIGHT;
-            hologram_quad(
-                parent, quad, hologram_material(sprite_assets, materials, &station.top, valid),
-                Transform::from_translation(Vec3::Z * height)
-                    .with_scale(Vec3::new(edge, edge, 1.0)),
+            let texture = atlases.object_kind(ObjectKind::Building(kind));
+            let mesh = sprite_mesh(atlases, texture, meshes, sprite_assets);
+            let size = object_sprite_size(atlases.source_size(texture));
+            let camera_up = camera_rotation * Vec3::Y;
+            let screen_drop = ground_screen_vertical_offset(
+                camera_rotation,
+                -OBJECT_SPRITE_SCREEN_DROP_PX,
             );
+            let material = hologram_material(sprite_assets, materials, atlases, texture, valid);
             hologram_quad(
-                parent, quad, hologram_material(sprite_assets, materials, &station.side, valid),
-                Transform::from_translation(Vec3::new(0.0, -half, height * 0.5))
-                    .with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2))
-                    .with_scale(Vec3::new(edge, height, 1.0)),
-            );
-            hologram_quad(
-                parent, quad, hologram_material(sprite_assets, materials, &station.front, valid),
-                Transform::from_translation(Vec3::new(-half, 0.0, height * 0.5))
-                    .with_rotation(
-                        Quat::from_rotation_z(-std::f32::consts::FRAC_PI_2)
-                            * Quat::from_rotation_x(std::f32::consts::FRAC_PI_2),
-                    )
-                    .with_scale(Vec3::new(edge, height, 1.0)),
+                parent, &mesh, material,
+                Transform::from_translation(
+                    camera_up * (size.y * 0.5) + screen_drop,
+                )
+                .with_rotation(camera_rotation)
+                .with_scale(Vec3::new(size.x, size.y, 1.0)),
             );
         }
     }
