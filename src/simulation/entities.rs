@@ -18,6 +18,7 @@ use super::chunk::Chunk;
 use super::hunger::{Activity, Hunger};
 use super::items::Inventory;
 use super::movement;
+use super::spatial::SpatialGrid;
 use super::tile::TileType;
 use super::time::TICKS_PER_SEC;
 use super::world::{World, WorldPos, split_tile, TilePos};
@@ -421,6 +422,23 @@ pub struct EntityStore {
     pub next_id: u64,
 }
 
+/// Переиспользуемые буферы поведения фауны: снимки позиций и
+/// пространственные сетки. Лежат в `World` (не в `EntityStore`), чтобы не
+/// попадать в сохранения и сравнения хранилища.
+#[derive(Default)]
+pub(crate) struct FaunaScratch {
+    /// Кролики текущего тика (id, позиция) — для укусов и сетки.
+    pub(crate) rabbits: Vec<(u64, WorldPos)>,
+    /// Голодные волки, которые ищут добычу.
+    pub(crate) hungry: Vec<u64>,
+    /// Сетка кроликов: волк ищет ближайшего за константное число ячеек.
+    pub(crate) rabbit_grid: SpatialGrid,
+    /// Сетка волков: кролик ищет ближайшую угрозу.
+    pub(crate) wolf_grid: SpatialGrid,
+    /// Сетка мяса на земле: цель голодного волка.
+    pub(crate) meat_grid: SpatialGrid,
+}
+
 impl EntityStore {
     /// Создаёт существо вида `kind` в позиции `pos` и возвращает его id.
     pub fn spawn(&mut self, kind: EntityKind, pos: WorldPos) -> u64 {
@@ -663,41 +681,42 @@ impl World {
     fn tick_fauna(&mut self, tick: u64, player_controlled: Option<u64>) {
         use super::item_entity::{WOLF_MEAT_SEEK_RADIUS, WOLF_SEEK_BELOW};
 
-        let mut rabbits: Vec<(u64, WorldPos)> = self
-            .entities
-            .iter()
-            .filter(|e| e.kind == EntityKind::Rabbit)
-            .map(|e| (e.id, e.pos))
-            .collect();
-        let wolves: Vec<(u64, WorldPos)> = self
-            .entities
-            .iter()
-            .filter(|e| e.kind == EntityKind::Wolf)
-            .map(|e| (e.id, e.pos))
-            .collect();
+        let mut fauna = std::mem::take(&mut self.fauna_scratch);
+        fauna.rabbits.clear();
+        fauna.hungry.clear();
+        fauna.rabbit_grid.clear();
+        fauna.wolf_grid.clear();
+        fauna.meat_grid.clear();
+        for entity in self.entities.iter() {
+            match entity.kind {
+                EntityKind::Rabbit => {
+                    fauna.rabbits.push((entity.id, entity.pos));
+                    fauna.rabbit_grid.insert(entity.id, entity.pos);
+                }
+                EntityKind::Wolf => {
+                    fauna.wolf_grid.insert(entity.id, entity.pos);
+                    // Голодный неспровоцированный волк ищет добычу.
+                    if entity.state != EntityState::Lying
+                        && entity.provoked_by.is_none()
+                        && Some(entity.id) != player_controlled
+                        && entity.hunger.value() < WOLF_SEEK_BELOW
+                    {
+                        fauna.hungry.push(entity.id);
+                    }
+                }
+                EntityKind::Human => {}
+            }
+        }
 
         // --- Волки: охота на кроликов и поиск мяса. ---
-        let hungry: Vec<u64> = self
-            .entities
-            .iter()
-            .filter(|e| {
-                e.kind == EntityKind::Wolf
-                    && e.state != EntityState::Lying
-                    && e.provoked_by.is_none()
-                    && Some(e.id) != player_controlled
-                    && e.hunger.value() < WOLF_SEEK_BELOW
-            })
-            .map(|e| e.id)
-            .collect();
-        if !hungry.is_empty() {
-            let meats: Vec<WorldPos> = self
-                .item_entities
-                .items
-                .iter()
-                .filter(|e| e.stack.kind.is_wolf_food() && e.fly.is_none())
-                .map(|e| e.pos)
-                .collect();
-            for wolf_id in hungry {
+        if !fauna.hungry.is_empty() {
+            for item in self.item_entities.items.iter() {
+                if item.stack.kind.is_wolf_food() && item.fly.is_none() {
+                    fauna.meat_grid.insert(item.id, item.pos);
+                }
+            }
+            for index in 0..fauna.hungry.len() {
+                let wolf_id = fauna.hungry[index];
                 let Some(wolf) = self.entities.get(wolf_id) else {
                     continue;
                 };
@@ -705,15 +724,7 @@ impl World {
                 let bite_ready = tick >= wolf.next_bite_tick;
 
                 // Ближайший кролик в радиусе охоты (детерминированный выбор).
-                let nearest_rabbit = rabbits
-                    .iter()
-                    .copied()
-                    .filter(|(_, rabbit_pos)| pos.dist(*rabbit_pos) <= WOLF_MEAT_SEEK_RADIUS)
-                    .min_by(|a, b| {
-                        pos.dist(a.1)
-                            .total_cmp(&pos.dist(b.1))
-                            .then_with(|| a.0.cmp(&b.0))
-                    });
+                let nearest_rabbit = fauna.rabbit_grid.nearest(pos, WOLF_MEAT_SEEK_RADIUS);
 
                 // Добыча в досягаемости — кусь по кулдауну.
                 if let Some((rabbit_id, rabbit_pos)) = nearest_rabbit
@@ -722,21 +733,21 @@ impl World {
                 {
                     let bitten = super::combat::wolf_bite_entity(self, wolf_id, rabbit_id, tick);
                     if bitten {
-                        // Убитый кролик выбывает из снимка: остальные волки
+                        // Убитый кролик выбывает из сетки: остальные волки
                         // не должны гнаться за трупом.
                         if self.entities.get(rabbit_id).is_none() {
-                            rabbits.retain(|(id, _)| *id != rabbit_id);
+                            fauna.rabbit_grid.remove(rabbit_id);
+                            fauna.rabbits.retain(|(id, _)| *id != rabbit_id);
                         }
                         continue;
                     }
                 }
 
                 // Цель: мясо важнее живой добычи, иначе ближайший кролик.
-                let target = meats
-                    .iter()
-                    .copied()
-                    .filter(|meat| pos.dist(*meat) <= WOLF_MEAT_SEEK_RADIUS)
-                    .min_by(|a, b| pos.dist(*a).total_cmp(&pos.dist(*b)))
+                let target = fauna
+                    .meat_grid
+                    .nearest(pos, WOLF_MEAT_SEEK_RADIUS)
+                    .map(|(_, meat)| meat)
                     .or_else(|| nearest_rabbit.map(|(_, rabbit_pos)| rabbit_pos));
                 let Some(target) = target else {
                     continue;
@@ -755,7 +766,8 @@ impl World {
 
         // --- Кролики: побег от волков, затем выпас. ---
         let side = self.size.tiles() as f32;
-        for (rabbit_id, pos) in rabbits {
+        for index in 0..fauna.rabbits.len() {
+            let (rabbit_id, pos) = fauna.rabbits[index];
             if Some(rabbit_id) == player_controlled {
                 continue;
             }
@@ -768,15 +780,10 @@ impl World {
             let current_target = rabbit.target;
 
             // Ближайший волк в радиусе побега.
-            let threat = wolves
-                .iter()
-                .filter(|(_, wolf_pos)| pos.dist(*wolf_pos) <= RABBIT_FLEE_RADIUS_TILES)
-                .min_by(|a, b| {
-                    pos.dist(a.1)
-                        .total_cmp(&pos.dist(b.1))
-                        .then_with(|| a.0.cmp(&b.0))
-                })
-                .map(|(_, wolf_pos)| *wolf_pos);
+            let threat = fauna
+                .wolf_grid
+                .nearest(pos, RABBIT_FLEE_RADIUS_TILES)
+                .map(|(_, wolf_pos)| wolf_pos);
             if let Some(wolf_pos) = threat {
                 let dx = pos.x - wolf_pos.x;
                 let dy = pos.y - wolf_pos.y;
@@ -847,6 +854,8 @@ impl World {
                 }
             }
         }
+        // Буферы (вместе с ёмкостью сеток) возвращаются в мир.
+        self.fauna_scratch = fauna;
     }
 
     /// Ближайший травяной тайл в радиусе `RABBIT_GRASS_SEARCH_TILES`.

@@ -43,6 +43,9 @@ pub enum Command {
     /// тайлу под курсором — ближайшее существо в радиусе попадания и
     /// досягаемости укуса. Только бой: ломать и добывать волк не умеет.
     PlayerBite { pos: TilePos },
+    /// Действие игрока: выпас захваченного кролика (ЛКМ по траве). Ест
+    /// траву с кулдауном, рельеф не меняется — как автономный выпас.
+    PlayerGraze { pos: TilePos },
     /// Действие игрока: собрать яблоки с яблони (ПКМ).
     PlayerHarvestApple { pos: TilePos },
     /// Действие игрока: положить предмет из руки на тайл.
@@ -206,30 +209,43 @@ impl CommandQueue {
                     let can_harvest =
                         actions::selected_item(world, actor) != Some(ItemKind::Bow);
                     // Добыча меняет либо объект (куст, валун), либо рельеф
-                    // (сбор травы превращает тайл в землю) — но не оба
-                    // сразу. Культура меняет только декор. Канал dirty
-                    // определяется по тому, что было на тайле до действия.
+                    // (сбор травы иногда превращает тайл в землю) — но не
+                    // оба сразу. Культура меняет только декор. Канал dirty
+                    // определяется по фактическим изменениям: сбор травы
+                    // с шансом оставляет тайл прежним, и пересобирать меш
+                    // блока в этом случае не нужно.
                     let had_object = world.object_at(pos).is_some();
                     let had_crop = world.crop_at(pos).is_some();
+                    let terrain_before = world.terrain_kind(pos);
                     if !combat::try_melee_attack(world, actor, pos, tick)
-                        && can_harvest && actions::interact(world, actor, pos)
+                        && can_harvest && actions::interact(world, actor, pos, tick)
                     {
+                        let terrain_changed = world.terrain_kind(pos) != terrain_before;
                         if had_object || had_crop {
                             dirty.decor(pos);
-                        } else {
+                        } else if terrain_changed {
                             dirty.terrain(pos);
                         }
                         // Пахота или уборка урожая: пашня может остаться
-                        // пустой — ставим месячную проверку.
-                        schedule_farmland_revert(world, sched, tick, pos);
-                        vegetation::after_tile_changed(world, sched, tick, pos);
+                        // пустой — ставим месячную проверку. Если тайл не
+                        // изменился, растительности перезапускать нечего.
+                        if had_object || had_crop || terrain_changed {
+                            schedule_farmland_revert(world, sched, tick, pos);
+                            vegetation::after_tile_changed(world, sched, tick, pos);
+                        }
                     }
                 }
                 Command::PlayerBite { pos } => {
                     let Some(actor) = actor else { continue };
-                    // Укус — единственное действие ЛКМ неразумного существа:
-                    // только бой, никаких ломаний и добычи.
+                    // Укус — единственное боевое действие ЛКМ неразумного
+                    // существа: только бой, никаких ломаний и добычи.
                     combat::wolf_bite(world, actor, pos, tick);
+                }
+                Command::PlayerGraze { pos } => {
+                    let Some(actor) = actor else { continue };
+                    // Выпас меняет только сытость существа: рельеф, декор
+                    // и растительность не трогаются, dirty-канал не нужен.
+                    actions::graze(world, actor, pos, tick);
                 }
                 Command::PlayerHarvestApple { pos } => {
                     let Some(actor) = actor else { continue };

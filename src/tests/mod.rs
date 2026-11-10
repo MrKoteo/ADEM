@@ -17,6 +17,7 @@ mod item_entity;
 mod player;
 mod rendering;
 mod save;
+mod spatial;
 mod time_scheduler;
 mod vegetation;
 mod world;

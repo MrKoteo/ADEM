@@ -1,13 +1,15 @@
-//! Спрайты мира: объекты/постройки/культуры/предметы на тайлах — дети
-//! terrain-блоков (их спавнит `terrain.rs` при постройке блока), дроп-сущности
-//! и существа — самостоятельные camera-facing квады, контуры выделения,
-//! вспышки урона и счётчики предметов. Общие ассеты (квад, материалы,
-//! контуры) кэшируются в `WorldSpriteAssets`.
+//! Спрайты мира: объекты/постройки/культуры/предметы на тайлах — декор
+//! terrain-блоков, запекаемый в 1–2 меша на блок (их спавнит `terrain.rs`
+//! при постройке блока), дроп-сущности и существа — самостоятельные
+//! camera-facing квады, контуры выделения, вспышки урона и счётчики
+//! предметов. Общие ассеты (квад, материалы, контуры) кэшируются в
+//! `WorldSpriteAssets`.
 
 use std::collections::{HashMap, HashSet};
 
 use bevy::asset::RenderAssetUsages;
 use bevy::image::ImageSampler;
+use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 
@@ -448,16 +450,15 @@ pub(crate) fn dilate_mask(mask: &[bool], width: u32, height: u32, radius_x: u32,
     dilated
 }
 
-fn world_sprite_material(
+/// Общий материал атласа: UV запечены в меши, поэтому от конкретной
+/// текстуры зависит только вид атласа.
+fn atlas_material(
     atlases: &TextureAtlases,
-    texture: AtlasTexture,
+    kind: AtlasKind,
     hurt_tint: bool,
     sprite_assets: &mut WorldSpriteAssets,
     materials: &mut Assets<StandardMaterial>,
 ) -> Handle<StandardMaterial> {
-    // UV запечены в меш, поэтому материал общий на весь атлас: меньше
-    // бинд-групп и больше возможностей для batching.
-    let kind = texture.kind;
     sprite_assets
         .materials
         .entry((kind, hurt_tint))
@@ -478,6 +479,18 @@ fn world_sprite_material(
         .clone()
 }
 
+fn world_sprite_material(
+    atlases: &TextureAtlases,
+    texture: AtlasTexture,
+    hurt_tint: bool,
+    sprite_assets: &mut WorldSpriteAssets,
+    materials: &mut Assets<StandardMaterial>,
+) -> Handle<StandardMaterial> {
+    // UV запечены в меш, поэтому материал общий на весь атлас: меньше
+    // бинд-групп и больше возможностей для batching.
+    atlas_material(atlases, texture.kind, hurt_tint, sprite_assets, materials)
+}
+
 /// Спрайт игрока больше не нужен отдельной сущностью: по целевому формату
 /// игрок — это захваченное существо мира и рисуется общим кодом спрайтов
 /// существ (`update_entity_sprites`), текстура — `human.png`.
@@ -492,7 +505,7 @@ pub(crate) fn update_item_entity_sprites(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut sprite_assets: ResMut<WorldSpriteAssets>,
     mut sprites: ResMut<ItemEntitySprites>,
-    camera: Query<&Transform, (With<Camera2d>, Without<EntitySprite>)>,
+    camera: Query<(&Camera, &Transform, &Projection), (With<Camera2d>, Without<EntitySprite>)>,
     sprite_transforms: Query<&mut Transform, With<EntitySprite>>,
 ) {
     let Some(world) = state.world.as_ref() else {
@@ -504,16 +517,41 @@ pub(crate) fn update_item_entity_sprites(
     let Some(atlases) = atlases else {
         return;
     };
-    let Ok(camera_transform) = camera.single() else {
+    let Ok((camera, camera_transform, projection)) = camera.single() else {
         return;
     };
+    let Projection::Orthographic(ortho) = projection else {
+        return;
+    };
+    let Some(viewport_size) = camera.logical_viewport_size() else {
+        return;
+    };
+    let camera_global = GlobalTransform::from(*camera_transform);
+    let margin_px = (TILE_SIZE * 2.0) / ortho.scale;
     let mut sprite_transforms: Query<&mut Transform, With<EntitySprite>> = sprite_transforms;
-    // Снятие спрайтов подобранных/исчезнувших предметов.
+    // Спрайты создаются только для видимых предметов: дроп может лежать
+    // в любом месте мира, и Bevy-сущность на каждый предмет не нужна.
+    let mut visible = HashSet::with_capacity(world.item_entities.len());
+    for entity in &world.item_entities.items {
+        let item_world = world_position(world, Vec2::new(entity.pos.x, entity.pos.y));
+        let Ok(viewport_pos) = camera.world_to_viewport(&camera_global, item_world) else {
+            continue;
+        };
+        if viewport_pos.x < -margin_px
+            || viewport_pos.x > viewport_size.x + margin_px
+            || viewport_pos.y < -margin_px
+            || viewport_pos.y > viewport_size.y + margin_px
+        {
+            continue;
+        }
+        visible.insert(entity.id);
+    }
+    // Снятие спрайтов подобранных/исчезнувших/ушедших с экрана предметов.
     let stale: Vec<u64> = sprites
         .map
         .keys()
         .copied()
-        .filter(|id| world.item_entity(*id).is_none())
+        .filter(|id| !visible.contains(id))
         .collect();
     for id in stale {
         if let Some((entity, _)) = sprites.map.remove(&id) {
@@ -523,6 +561,9 @@ pub(crate) fn update_item_entity_sprites(
     let camera_up = camera_transform.rotation * Vec3::Y;
     let height = TILE_SIZE * 0.3;
     for entity in &world.item_entities.items {
+        if !visible.contains(&entity.id) {
+            continue;
+        }
         let pos_xy = [entity.pos.x, entity.pos.y];
         if let Some(&(sprite, last_pos)) = sprites.map.get(&entity.id) {
             // Лежащий предмет не двигается; летящий — обновляем позицию
@@ -931,12 +972,168 @@ pub(crate) fn update_item_count_labels(
     }
 }
 
-/// Спавнит объекты блока как дочерние спрайты. Объекты и постройки —
-/// camera-facing спрайты с UV, запечёнными в меш атласа; костёр — крест
-/// из двух вертикальных квадов вдоль середин сторон тайла; склад — плоский
-/// декаль на всю поверхность тайла. Идёт по разреженному слою объектов
-/// четырёх чанков блока — стоимость пропорциональна числу объектов.
-pub(crate) fn spawn_objects(
+/// Геометрия декора одного блока, сгруппированная по атласу. Все квады
+/// сливаются в один меш на атлас: в мире остаются единицы дочерних
+/// Bevy-сущностей на блок вместо тысячи спрайтов-объектов. Визуал не
+/// меняется — вершины считаются той же формулой, что у отдельных спрайтов.
+#[derive(Default)]
+pub(crate) struct BlockDecor {
+    items: QuadBatch,
+    sprites: QuadBatch,
+    /// Счётчики количеств у лежащих предметов: они текстовые и остаются
+    /// отдельными `Text2d`-детьми (их немного).
+    labels: Vec<(Transform, String)>,
+}
+
+/// Буфер квадов одного атласа: позиции, UV и индексы для одного меша.
+#[derive(Default)]
+struct QuadBatch {
+    positions: Vec<[f32; 3]>,
+    uvs: Vec<[f32; 2]>,
+    indices: Vec<u32>,
+}
+
+impl QuadBatch {
+    /// Добавляет квад с трансформом. Порядок вершин и UV совпадает с
+    /// `Rectangle` + `sprite_mesh`, поэтому картинка не сдвигается.
+    fn push(&mut self, uv: [f32; 4], transform: &Transform) {
+        let base = self.positions.len() as u32;
+        let rotation = transform.rotation;
+        let scale = transform.scale;
+        let translation = transform.translation;
+        let corner = |x: f32, y: f32| {
+            let point = rotation * Vec3::new(x * scale.x, y * scale.y, 0.0) + translation;
+            [point.x, point.y, point.z]
+        };
+        // Порядок вершин как у Bevy `Rectangle`: (+h,+h), (−h,+h),
+        // (−h,−h), (+h,−h). Это важно: `sprite_mesh` назначает UV именно
+        // в этом порядке, иначе рисунок развернулся бы.
+        self.positions.extend([
+            corner(0.5, 0.5),
+            corner(-0.5, 0.5),
+            corner(-0.5, -0.5),
+            corner(0.5, -0.5),
+        ]);
+        let [u0, v0, u1, v1] = uv;
+        self.uvs
+            .extend([[u1, v0], [u0, v0], [u0, v1], [u1, v1]]);
+        self.indices
+            .extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+    }
+
+    /// Собирает меш; пустой буфер не создаёт ассет.
+    fn into_mesh(self) -> Option<Mesh> {
+        if self.positions.is_empty() {
+            return None;
+        }
+        let mut mesh = Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::RENDER_WORLD,
+        );
+        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, self.positions);
+        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, self.uvs);
+        mesh.insert_indices(Indices::U32(self.indices));
+        Some(mesh)
+    }
+}
+
+impl BlockDecor {
+    /// Добавляет один плоский/билборд-квад в буфер своего атласа.
+    fn push(&mut self, texture: AtlasTexture, uv: [f32; 4], transform: Transform) {
+        match texture.kind {
+            AtlasKind::Items => self.items.push(uv, &transform),
+            AtlasKind::Sprites => self.sprites.push(uv, &transform),
+        }
+    }
+
+    /// Крест из двух вертикальных квадов (костёр, культуры): та же геометрия,
+    /// что была у отдельных спрайтов.
+    fn push_cross(
+        &mut self,
+        texture: AtlasTexture,
+        uv: [f32; 4],
+        anchor: Vec3,
+        edge: f32,
+        height: f32,
+    ) {
+        let center = anchor + Vec3::Z * height * 0.5;
+        let first = Transform::from_translation(center)
+            .with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2))
+            .with_scale(Vec3::new(edge, height, 1.0));
+        // Вторая стена довёрнута вокруг Z на 90° — вдоль другой оси тайла.
+        let second = Transform::from_translation(center)
+            .with_rotation(
+                Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)
+                    * Quat::from_rotation_x(std::f32::consts::FRAC_PI_2),
+            )
+            .with_scale(Vec3::new(edge, height, 1.0));
+        self.push(texture, uv, first);
+        self.push(texture, uv, second);
+    }
+
+    /// Плоский декаль на поверхность тайла (склад).
+    fn push_decal(
+        &mut self,
+        texture: AtlasTexture,
+        uv: [f32; 4],
+        anchor: Vec3,
+        scale: f32,
+    ) {
+        let edge = WORLD_TILE_SIZE * scale;
+        let transform = Transform::from_translation(anchor + Vec3::Z * DECAL_Z_OFFSET)
+            .with_scale(Vec3::new(edge, edge, 1.0));
+        self.push(texture, uv, transform);
+    }
+
+    /// Создаёт дочерние меши блока и текстовые счётчики. Один меш на атлас
+    /// (до двух на блок) вместо сущности на каждый объект.
+    pub(crate) fn spawn(
+        self,
+        parent: &mut EntityCommands,
+        atlases: &TextureAtlases,
+        meshes: &mut Assets<Mesh>,
+        materials: &mut Assets<StandardMaterial>,
+        sprite_assets: &mut WorldSpriteAssets,
+        font: &Handle<Font>,
+    ) {
+        let items = self.items.into_mesh();
+        let sprites = self.sprites.into_mesh();
+        parent.with_children(|parent| {
+            for (kind, mesh) in [(AtlasKind::Items, items), (AtlasKind::Sprites, sprites)] {
+                let Some(mesh) = mesh else {
+                    continue;
+                };
+                let material = atlas_material(atlases, kind, false, sprite_assets, materials);
+                parent.spawn((
+                    Mesh3d(meshes.add(mesh)),
+                    MeshMaterial3d(material),
+                    Transform::default(),
+                ));
+            }
+            for (transform, text) in self.labels {
+                // Счётчик растрируется крупным шрифтом и уменьшается
+                // трансформом: при font_size = 4 глифы состоят из
+                // нескольких пикселей и на экране выглядят мылом.
+                parent.spawn((
+                    Text2d::new(text),
+                    Visibility::Visible,
+                    ItemCountLabel,
+                    TextFont {
+                        font: font.clone().into(),
+                        font_size: ITEM_COUNT_FONT_SIZE.into(),
+                        ..default()
+                    },
+                    TextColor(Color::WHITE),
+                    transform,
+                ));
+            }
+        });
+    }
+}
+
+/// Спавнит весь декор блока: объекты/постройки, культуры и предметы.
+/// Вызывается при сборке и обновлении блока; внутри — батчинг по атласам.
+pub(crate) fn spawn_block_decor(
     parent: &mut EntityCommands,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
@@ -946,162 +1143,105 @@ pub(crate) fn spawn_objects(
     origin: Vec3,
     camera_rotation: Quat,
     atlases: &TextureAtlases,
+    font: &Handle<Font>,
+) {
+    let mut decor = BlockDecor::default();
+    collect_objects(
+        &mut decor,
+        atlases,
+        world,
+        block,
+        origin,
+        camera_rotation,
+    );
+    collect_crops(&mut decor, atlases, world, block, origin);
+    collect_items(
+        &mut decor,
+        atlases,
+        world,
+        block,
+        origin,
+        camera_rotation,
+    );
+    decor.spawn(parent, atlases, meshes, materials, sprite_assets, font);
+}
+
+/// Собирает объекты блока в батч. Объекты и постройки — camera-facing
+/// спрайты с UV, запечёнными в общий меш; костёр — крест; склад — декаль.
+fn collect_objects(
+    decor: &mut BlockDecor,
+    atlases: &TextureAtlases,
+    world: &World,
+    block: BlockPos,
+    origin: Vec3,
+    camera_rotation: Quat,
 ) {
     let bx0 = block.x * BLOCK_TILES;
     let by0 = block.y * BLOCK_TILES;
-    // Блок 64×64 покрывает ровно 4×4 чанков (сетка блоков кратна чанку);
-    // у края мира часть чанков за границей — они пропускаются.
     let chunks_per_block = BLOCK_TILES / CHUNK_SIZE as i32;
     let cps = world.chunks_per_side as i32;
 
-    parent.with_children(|parent| {
-        for cy in 0..chunks_per_block {
-            for cx in 0..chunks_per_block {
-                let cpx = bx0.div_euclid(CHUNK_SIZE as i32) + cx;
-                let cpy = by0.div_euclid(CHUNK_SIZE as i32) + cy;
-                if cpx < 0 || cpy < 0 || cpx >= cps || cpy >= cps {
-                    continue;
-                }
-                let chunk = world.chunk(ChunkPos { x: cpx as u32, y: cpy as u32 });
-                for (&idx, obj) in &chunk.objects {
-                    let tile_x = cpx * CHUNK_SIZE as i32 + (idx % CHUNK_SIZE as u8) as i32;
-                    let tile_y = cpy * CHUNK_SIZE as i32 + (idx / CHUNK_SIZE as u8) as i32;
-                    let tile_world = world_position(
-                        world,
-                        Vec2::new(tile_x as f32 + 0.5, tile_y as f32 + 0.5),
-                    );
-                    let anchor = tile_world - origin;
-                    match obj.kind {
-                        // Костёр — станция, но рисуется крестом из двух
-                        // вертикальных квадов вдоль осей X и Y тайла.
-                        ObjectKind::Building(BuildingKind::Campfire) => {
-                            spawn_campfire_cross(
-                                parent, meshes, sprite_assets, materials, atlases, anchor,
-                            );
-                        }
-                        // Склад: плоская текстура-декаль поверх тайла.
-                        ObjectKind::Building(BuildingKind::Storage) => {
-                            spawn_flat_decal(
-                                parent, meshes, sprite_assets, materials,
-                                atlases, atlases.storage_flat(), anchor, 1.0,
-                            );
-                        }
-                        // Все остальные постройки — плоский спрайт по общему
-                        // правилу объектов (низ прижат к центру тайла).
-                        _ => {
-                            let texture = atlases.object(obj);
-                            let mesh = sprite_mesh(atlases, texture, meshes, sprite_assets);
-                            let size = object_sprite_size(atlases.source_size(texture));
-                            let height = size.y * 0.5;
-                            let camera_up = camera_rotation * Vec3::Y;
-                            let material = world_sprite_material(
-                                atlases,
-                                texture,
-                                false,
-                                sprite_assets,
-                                materials,
-                            );
-                            // Сдвиг вниз по экрану — в плоскости земли, без
-                            // изменения высоты: спрайт «стоит» на тайле, но
-                            // не уходит под рельеф.
-                            let screen_drop = ground_screen_vertical_offset(
-                                camera_rotation,
-                                -OBJECT_SPRITE_SCREEN_DROP_PX,
-                            );
-                            let mut transform = Transform::from_translation(
-                                anchor + camera_up * height + screen_drop,
-                            )
-                            .with_rotation(camera_rotation);
-                            transform.scale = Vec3::new(size.x, size.y, 1.0);
-                            parent.spawn((Mesh3d(mesh), MeshMaterial3d(material), transform));
-                        }
+    for cy in 0..chunks_per_block {
+        for cx in 0..chunks_per_block {
+            let cpx = bx0.div_euclid(CHUNK_SIZE as i32) + cx;
+            let cpy = by0.div_euclid(CHUNK_SIZE as i32) + cy;
+            if cpx < 0 || cpy < 0 || cpx >= cps || cpy >= cps {
+                continue;
+            }
+            let chunk = world.chunk(ChunkPos { x: cpx as u32, y: cpy as u32 });
+            for (&idx, obj) in &chunk.objects {
+                let tile_x = cpx * CHUNK_SIZE as i32 + (idx % CHUNK_SIZE as u8) as i32;
+                let tile_y = cpy * CHUNK_SIZE as i32 + (idx / CHUNK_SIZE as u8) as i32;
+                let tile_world = world_position(
+                    world,
+                    Vec2::new(tile_x as f32 + 0.5, tile_y as f32 + 0.5),
+                );
+                let anchor = tile_world - origin;
+                match obj.kind {
+                    ObjectKind::Building(BuildingKind::Campfire) => {
+                        let texture = atlases.campfire_cross();
+                        let uv = atlases.uv(texture);
+                        decor.push_cross(
+                            texture,
+                            uv,
+                            anchor,
+                            WORLD_TILE_SIZE,
+                            TILE_SIZE * 0.6,
+                        );
+                    }
+                    ObjectKind::Building(BuildingKind::Storage) => {
+                        let texture = atlases.storage_flat();
+                        let uv = atlases.uv(texture);
+                        decor.push_decal(texture, uv, anchor, 1.0);
+                    }
+                    _ => {
+                        let texture = atlases.object(obj);
+                        let uv = atlases.uv(texture);
+                        let size = object_sprite_size(atlases.source_size(texture));
+                        let height = size.y * 0.5;
+                        let camera_up = camera_rotation * Vec3::Y;
+                        // Сдвиг вниз по экрану — в плоскости земли, без
+                        // изменения высоты: спрайт «стоит» на тайле, но
+                        // не уходит под рельеф.
+                        let screen_drop = ground_screen_vertical_offset(
+                            camera_rotation,
+                            -OBJECT_SPRITE_SCREEN_DROP_PX,
+                        );
+                        let mut transform = Transform::from_translation(
+                            anchor + camera_up * height + screen_drop,
+                        )
+                        .with_rotation(camera_rotation);
+                        transform.scale = Vec3::new(size.x, size.y, 1.0);
+                        decor.push(texture, uv, transform);
                     }
                 }
             }
         }
-    });
+    }
 }
 
 /// Небольшой z-сдвиг декаля над рельефом против z-fighting.
 pub(crate) const DECAL_Z_OFFSET: f32 = 0.02;
-
-/// Крест из двух вертикальных квадов вдоль осей X и Y через центр точки
-/// (из середин противоположных сторон): двойная сторона и маска-альфа
-/// материалов спрайтов дают правильный вид с фиксированной камеры.
-/// Общая основа костра и культур.
-fn spawn_cross(
-    parent: &mut ChildSpawnerCommands,
-    meshes: &mut Assets<Mesh>,
-    sprite_assets: &mut WorldSpriteAssets,
-    materials: &mut Assets<StandardMaterial>,
-    atlases: &TextureAtlases,
-    texture: AtlasTexture,
-    anchor: Vec3,
-    edge: f32,
-    height: f32,
-) {
-    let mesh = sprite_mesh(atlases, texture, meshes, sprite_assets);
-    let material = world_sprite_material(atlases, texture, false, sprite_assets, materials);
-    let center = anchor + Vec3::Z * height * 0.5;
-    // Квад 1: стена вдоль оси X (нормаль −Y, ширина по X, высота по Z).
-    parent.spawn((
-        Mesh3d(mesh.clone()),
-        MeshMaterial3d(material.clone()),
-        Transform::from_translation(center)
-            .with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2))
-            .with_scale(Vec3::new(edge, height, 1.0)),
-    ));
-    // Квад 2: та же стена, довернутая вокруг Z на 90° — вдоль оси Y.
-    parent.spawn((
-        Mesh3d(mesh),
-        MeshMaterial3d(material),
-        Transform::from_translation(center)
-            .with_rotation(
-                Quat::from_rotation_z(std::f32::consts::FRAC_PI_2) * Quat::from_rotation_x(std::f32::consts::FRAC_PI_2),
-            )
-            .with_scale(Vec3::new(edge, height, 1.0)),
-    ));
-}
-
-/// Крест костра в тайле.
-fn spawn_campfire_cross(
-    parent: &mut ChildSpawnerCommands,
-    meshes: &mut Assets<Mesh>,
-    sprite_assets: &mut WorldSpriteAssets,
-    materials: &mut Assets<StandardMaterial>,
-    atlases: &TextureAtlases,
-    anchor: Vec3,
-) {
-    spawn_cross(
-        parent, meshes, sprite_assets, materials,
-        atlases, atlases.campfire_cross(), anchor,
-        WORLD_TILE_SIZE, TILE_SIZE * 0.6,
-    );
-}
-
-/// Плоский декаль на поверхность тайла (культуры, склад): горизонтальный
-/// квад, заполняющий ромб тайла, с z-сдвигом против z-fighting. `scale`
-/// — доля тайла (1.0 — весь ромб).
-fn spawn_flat_decal(
-    parent: &mut ChildSpawnerCommands,
-    meshes: &mut Assets<Mesh>,
-    sprite_assets: &mut WorldSpriteAssets,
-    materials: &mut Assets<StandardMaterial>,
-    atlases: &TextureAtlases,
-    texture: AtlasTexture,
-    anchor: Vec3,
-    scale: f32,
-) {
-    let mesh = sprite_mesh(atlases, texture, meshes, sprite_assets);
-    let material = world_sprite_material(atlases, texture, false, sprite_assets, materials);
-    let edge = WORLD_TILE_SIZE * scale;
-    parent.spawn((
-        Mesh3d(mesh),
-        MeshMaterial3d(material),
-        Transform::from_translation(anchor + Vec3::Z * DECAL_Z_OFFSET)
-            .with_scale(Vec3::new(edge, edge, 1.0)),
-    ));
-}
 
 /// Размер спрайта по размерам исходной текстуры: 64 px → 1.6 тайла,
 /// 128 px → 3.2 тайла. Постройки используют то же правило, что и природные
@@ -1115,135 +1255,112 @@ pub(crate) fn object_sprite_size(texture_size: UVec2) -> Vec2 {
 /// Высота креста культуры, мировых единиц (как у костра — часть тайла).
 const CROP_HEIGHT: f32 = TILE_SIZE * 0.55;
 
-/// Спавнит культуры блока крестами из двух вертикальных квадов (как костёр).
-/// Идёт по разреженному слою культур четырёх чанков блока.
-pub(crate) fn spawn_crops(
-    parent: &mut EntityCommands,
-    meshes: &mut Assets<Mesh>,
-    materials: &mut Assets<StandardMaterial>,
-    sprite_assets: &mut WorldSpriteAssets,
+/// Собирает культуры блока крестами (как костёр) в общий батч.
+fn collect_crops(
+    decor: &mut BlockDecor,
+    atlases: &TextureAtlases,
     world: &World,
     block: BlockPos,
     origin: Vec3,
-    atlases: &TextureAtlases,
 ) {
     let bx0 = block.x * BLOCK_TILES;
     let by0 = block.y * BLOCK_TILES;
     let chunks_per_block = BLOCK_TILES / CHUNK_SIZE as i32;
     let cps = world.chunks_per_side as i32;
 
-    parent.with_children(|parent| {
-        for cy in 0..chunks_per_block {
-            for cx in 0..chunks_per_block {
-                let cpx = bx0.div_euclid(CHUNK_SIZE as i32) + cx;
-                let cpy = by0.div_euclid(CHUNK_SIZE as i32) + cy;
-                if cpx < 0 || cpy < 0 || cpx >= cps || cpy >= cps {
-                    continue;
-                }
-                let chunk = world.chunk(ChunkPos { x: cpx as u32, y: cpy as u32 });
-                for (&idx, crop) in &chunk.crops {
-                    let tile = TilePos {
-                        x: cpx * CHUNK_SIZE as i32 + (idx % CHUNK_SIZE as u8) as i32,
-                        y: cpy * CHUNK_SIZE as i32 + (idx / CHUNK_SIZE as u8) as i32,
-                    };
-                    let tile_world = world_position(
-                        world, Vec2::new(tile.x as f32 + 0.5, tile.y as f32 + 0.5),
-                    );
-                    spawn_cross(
-                        parent, meshes, sprite_assets, materials,
-                        atlases, atlases.crop(crop.kind, crop.stage),
-                        tile_world - origin,
-                        WORLD_TILE_SIZE, CROP_HEIGHT,
-                    );
-                }
+    for cy in 0..chunks_per_block {
+        for cx in 0..chunks_per_block {
+            let cpx = bx0.div_euclid(CHUNK_SIZE as i32) + cx;
+            let cpy = by0.div_euclid(CHUNK_SIZE as i32) + cy;
+            if cpx < 0 || cpy < 0 || cpx >= cps || cpy >= cps {
+                continue;
+            }
+            let chunk = world.chunk(ChunkPos { x: cpx as u32, y: cpy as u32 });
+            for (&idx, crop) in &chunk.crops {
+                let tile = TilePos {
+                    x: cpx * CHUNK_SIZE as i32 + (idx % CHUNK_SIZE as u8) as i32,
+                    y: cpy * CHUNK_SIZE as i32 + (idx / CHUNK_SIZE as u8) as i32,
+                };
+                let tile_world = world_position(
+                    world,
+                    Vec2::new(tile.x as f32 + 0.5, tile.y as f32 + 0.5),
+                );
+                let texture = atlases.crop(crop.kind, crop.stage);
+                let uv = atlases.uv(texture);
+                decor.push_cross(
+                    texture,
+                    uv,
+                    tile_world - origin,
+                    WORLD_TILE_SIZE,
+                    CROP_HEIGHT,
+                );
             }
         }
-    });
+    }
 }
 
-/// Спавнит предметы на тайлах блока (дроп) как дочерние спрайты.
-pub(crate) fn spawn_items(
-    parent: &mut EntityCommands,
-    meshes: &mut Assets<Mesh>,
-    materials: &mut Assets<StandardMaterial>,
-    sprite_assets: &mut WorldSpriteAssets,
+/// Собирает предметы на тайлах блока (слой `Chunk.items`) в общий батч.
+/// Счётчики количеств складываются в `labels` и спавнятся текстом.
+fn collect_items(
+    decor: &mut BlockDecor,
+    atlases: &TextureAtlases,
     world: &World,
     block: BlockPos,
     origin: Vec3,
     camera_rotation: Quat,
-    atlases: &TextureAtlases,
-    font: &Handle<Font>,
 ) {
     let bx0 = block.x * BLOCK_TILES;
     let by0 = block.y * BLOCK_TILES;
     let chunks_per_block = BLOCK_TILES / CHUNK_SIZE as i32;
     let cps = world.chunks_per_side as i32;
 
-    parent.with_children(|parent| {
-        for cy in 0..chunks_per_block {
-            for cx in 0..chunks_per_block {
-                let cpx = bx0.div_euclid(CHUNK_SIZE as i32) + cx;
-                let cpy = by0.div_euclid(CHUNK_SIZE as i32) + cy;
-                if cpx < 0 || cpy < 0 || cpx >= cps || cpy >= cps {
-                    continue;
-                }
-                let chunk = world.chunk(ChunkPos { x: cpx as u32, y: cpy as u32 });
-                for (&idx, stack) in &chunk.items {
-                    let tile = TilePos {
-                        x: cpx * CHUNK_SIZE as i32 + (idx % CHUNK_SIZE as u8) as i32,
-                        y: cpy * CHUNK_SIZE as i32 + (idx / CHUNK_SIZE as u8) as i32,
-                    };
-                    let tile_world = world_position(
-                        world,
-                        Vec2::new(tile.x as f32 + 0.5, tile.y as f32 + 0.5),
+    for cy in 0..chunks_per_block {
+        for cx in 0..chunks_per_block {
+            let cpx = bx0.div_euclid(CHUNK_SIZE as i32) + cx;
+            let cpy = by0.div_euclid(CHUNK_SIZE as i32) + cy;
+            if cpx < 0 || cpy < 0 || cpx >= cps || cpy >= cps {
+                continue;
+            }
+            let chunk = world.chunk(ChunkPos { x: cpx as u32, y: cpy as u32 });
+            for (&idx, stack) in &chunk.items {
+                let tile = TilePos {
+                    x: cpx * CHUNK_SIZE as i32 + (idx % CHUNK_SIZE as u8) as i32,
+                    y: cpy * CHUNK_SIZE as i32 + (idx / CHUNK_SIZE as u8) as i32,
+                };
+                let tile_world = world_position(
+                    world,
+                    Vec2::new(tile.x as f32 + 0.5, tile.y as f32 + 0.5),
+                );
+                let local = tile_world - origin;
+                let item_anchor = local + Vec3::Z;
+                let item_height = TILE_SIZE * 0.3;
+                let item_offset = camera_rotation * Vec3::Y * item_height
+                    + ground_screen_vertical_offset(
+                        camera_rotation,
+                        GROUND_ITEM_SCREEN_OFFSET,
                     );
-                    let local = tile_world - origin;
-                    let item_anchor = local + Vec3::Z;
-                    let item_height = TILE_SIZE * 0.3;
-                    let item_offset = camera_rotation * Vec3::Y * item_height
-                        + ground_screen_vertical_offset(
-                            camera_rotation,
-                            GROUND_ITEM_SCREEN_OFFSET,
-                        );
-                    let texture = atlases.item(stack.kind);
-                    let mesh = sprite_mesh(atlases, texture, meshes, sprite_assets);
-                    let material =
-                        world_sprite_material(atlases, texture, false, sprite_assets, materials);
-                    let item_size = Vec2::splat(TILE_SIZE * 0.6 * GROUND_ITEM_SCALE);
-                    let mut transform = Transform::from_translation(
-                        item_anchor + item_offset,
-                    )
-                    .with_rotation(camera_rotation);
-                    transform.scale = Vec3::new(item_size.x, item_size.y, 1.0);
-                    parent.spawn((Mesh3d(mesh), MeshMaterial3d(material), transform));
-                    if stack.count > 1 {
-                        // Счётчик растрируется крупным шрифтом и уменьшается
-                        // трансформом: при font_size = 4 глифы состоят из
-                        // нескольких пикселей и на экране выглядят мылом
-                        // при любом зуме. 40 px с масштабом 0.1 дают тот же
-                        // размер на экране, но с чёткой растеризацией.
-                        let label_anchor = item_anchor
-                            + item_offset
-                            + Vec3::new(TILE_SIZE * 0.25, -TILE_SIZE * 0.25, 2.0);
-                        parent.spawn((
-                            Text2d::new(stack.count.to_string()),
-                            Visibility::Visible,
-                            ItemCountLabel,
-                            TextFont {
-                                font: font.clone().into(),
-                                font_size: ITEM_COUNT_FONT_SIZE.into(),
-                                ..default()
-                            },
-                            TextColor(Color::WHITE),
-                            Transform::from_translation(label_anchor)
+                let texture = atlases.item(stack.kind);
+                let uv = atlases.uv(texture);
+                let item_size = Vec2::splat(TILE_SIZE * 0.6 * GROUND_ITEM_SCALE);
+                let mut transform =
+                    Transform::from_translation(item_anchor + item_offset)
+                        .with_rotation(camera_rotation);
+                transform.scale = Vec3::new(item_size.x, item_size.y, 1.0);
+                decor.push(texture, uv, transform);
+                if stack.count > 1 {
+                    let label_anchor = item_anchor
+                        + item_offset
+                        + Vec3::new(TILE_SIZE * 0.25, -TILE_SIZE * 0.25, 2.0);
+                    decor.labels.push((
+                        Transform::from_translation(label_anchor)
                             .with_rotation(camera_rotation)
                             .with_scale(Vec3::splat(ITEM_COUNT_SCALE)),
-                        ));
-                    }
+                        stack.count.to_string(),
+                    ));
                 }
             }
         }
-    });
+    }
 }
 
 #[cfg(test)]
@@ -1262,5 +1379,24 @@ mod ground_item_tests {
         assert!(offset.z.abs() < f32::EPSILON);
         assert!((offset.dot(camera_up) - GROUND_ITEM_SCREEN_OFFSET).abs() < 1e-4);
         assert!(offset.dot(camera_right).abs() < 1e-4);
+    }
+
+    /// Батчинг декора: квад даёт 4 вершины и 6 индексов, UV идут в том же
+    /// порядке, что у `Rectangle`-спрайта (визуал не меняется).
+    #[test]
+    fn quad_batch_bakes_transform_and_uv_order() {
+        let mut batch = QuadBatch::default();
+        let transform = Transform::from_translation(Vec3::new(2.0, 3.0, 4.0))
+            .with_scale(Vec3::new(2.0, 4.0, 1.0));
+        batch.push([0.1, 0.2, 0.3, 0.4], &transform);
+
+        assert_eq!(batch.positions.len(), 4);
+        assert_eq!(batch.uvs.len(), 4);
+        assert_eq!(batch.indices, vec![0, 1, 2, 0, 2, 3]);
+        // Локальные углы Rectangle ±0.5, масштаб 2×4, центр (2,3,4).
+        assert_eq!(batch.positions[0], [3.0, 5.0, 4.0]);
+        assert_eq!(batch.positions[2], [1.0, 1.0, 4.0]);
+        assert_eq!(batch.uvs[0], [0.3, 0.2]);
+        assert_eq!(batch.uvs[2], [0.1, 0.4]);
     }
 }

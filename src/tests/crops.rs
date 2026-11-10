@@ -124,7 +124,7 @@ fn harvest_mature_crop_gives_yield_and_frees_tile() {
     );
 
     // Место под весь урожай есть — уборка проходит.
-    assert!(actions::interact(&mut world, actor, pos));
+    assert!(actions::interact(&mut world, actor, pos, 0));
     let yield_wheat = CropKind::Wheat.harvest_yield();
     for (kind, count) in yield_wheat {
         if count > 0 {
@@ -153,7 +153,7 @@ fn harvest_immune_to_full_inventory() {
         mind_mut(&mut world, actor).inventory.items[slot] =
             Some(crate::simulation::items::ItemStack { kind: ItemKind::Rock, count: 64 });
     }
-    assert!(!actions::interact(&mut world, actor, pos));
+    assert!(!actions::interact(&mut world, actor, pos, 0));
     // Культура не потеряна.
     assert!(world.crop_at(pos).is_some());
 }

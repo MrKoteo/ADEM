@@ -6,8 +6,8 @@ use super::chunk::{Chunk, ResourceDeposit, TerrainTiles, CHUNK_SIZE};
 use super::combat::{Projectile, StuckSpear};
 use super::containers::Container;
 use super::crops::Crop;
-use super::entities::EntityStore;
-use super::item_entity::{ItemEntities, ItemEntity};
+use super::entities::{EntityStore, FaunaScratch};
+use super::item_entity::{ItemEntities, ItemEntity, ItemScratch};
 use super::items::ItemStack;
 use super::objects::WorldObject;
 #[allow(unused_imports)]
@@ -115,6 +115,11 @@ pub struct World {
     /// Прогресс ломания построек (транзиент, в сейв не пишется): тики
     /// непрерывного зажатия ЛКМ по постройке. Ключ — тайл постройки.
     pub building_breaks: HashMap<TilePos, BuildingBreak>,
+    /// Переиспользуемые буферы поведения фауны (снимки, пространственные
+    /// сетки): не сохраняются и не влияют на детерминизм.
+    pub(crate) fauna_scratch: FaunaScratch,
+    /// Переиспользуемые буферы поиска едоков у дропа.
+    pub(crate) item_scratch: ItemScratch,
 }
 
 /// Накопленный прогресс ломания постройки (simulation/actions.rs).
@@ -182,6 +187,8 @@ impl World {
             next_projectile_id: 0,
             item_entities: ItemEntities::default(),
             building_breaks: HashMap::new(),
+            fauna_scratch: FaunaScratch::default(),
+            item_scratch: ItemScratch::default(),
         }
     }
 
@@ -334,6 +341,7 @@ impl World {
     }
 
     /// Item-сущность по id (для рендера и отладки).
+    #[allow(dead_code)] // используется рендером/тестами через ItemEntities::get
     pub fn item_entity(&self, id: u64) -> Option<&ItemEntity> {
         self.item_entities.get(id)
     }

@@ -15,9 +15,6 @@
 //! вид задачи, координаты) — поток не зависит от порядка прочих событий;
 //! обходы при посеве идут row-major, порядок регистрации задач стабилен.
 
-use rand::rngs::StdRng;
-use rand::{RngExt, SeedableRng};
-
 use super::chunk::CHUNK_TILES;
 use super::dirty::DirtyTiles;
 use super::objects::{ObjectKind, WorldObject};
@@ -75,7 +72,7 @@ fn neighbors<'a>(world: &'a World, pos: TilePos) -> impl Iterator<Item = TilePos
 /// Детерминированный RNG события: сеется от seed мира, тика события,
 /// тега вида задачи и координат. Поток не зависит от порядка прочих
 /// событий и воспроизводится при загрузке сохранения.
-fn event_rng(seed: u64, tick: u64, tag: u8, chunk: ChunkPos, local: u8) -> StdRng {
+fn event_rng(seed: u64, tick: u64, tag: u8, chunk: ChunkPos, local: u8) -> SplitMix64 {
     let mut h = seed
         ^ tick.wrapping_mul(0x9E37_79B9_7F4A_7C15)
         ^ (tag as u64).wrapping_mul(0xBF58_476D_1CE4_E5B9)
@@ -84,14 +81,45 @@ fn event_rng(seed: u64, tick: u64, tag: u8, chunk: ChunkPos, local: u8) -> StdRn
         ^ (local as u64).wrapping_mul(0x2545_F491_4F6C_DD1D);
     h = h.wrapping_mul(0xD6E8_FEB8_6659_7B93);
     h ^= h >> 32;
-    StdRng::seed_from_u64(h)
+    SplitMix64::new(h)
+}
+
+/// Минимальный splitmix64: событиям растительности не нужен тяжёлый
+/// `StdRng` с инициализацией состояния на каждое событие. Бросок
+/// детерминирован, качество распределения для игровых процентов достаточное.
+struct SplitMix64 {
+    state: u64,
+}
+
+impl SplitMix64 {
+    fn new(seed: u64) -> Self {
+        Self { state: seed }
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        self.state = self.state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    /// Бросок [0, 1).
+    fn next_f32(&mut self) -> f32 {
+        (self.next_u64() >> 40) as f32 / (1u32 << 24) as f32
+    }
+
+    /// Равномерный индекс [0, len); детерминированный.
+    fn next_below(&mut self, len: usize) -> usize {
+        (self.next_u64() % len.max(1) as u64) as usize
+    }
 }
 
 /// Интервал до следующего события цепочки: геометрическое распределение
 /// с вероятностью `p` за такт (среднее 1/p тиков), минимум 1 тик.
-fn interval_ticks(rng: &mut StdRng, p: f32) -> u64 {
+fn interval_ticks(rng: &mut SplitMix64, p: f32) -> u64 {
     let p = p.clamp(1e-6, 0.999);
-    let u = 1.0 - rng.random::<f32>(); // (0, 1] — логарифм определён
+    let u = 1.0 - rng.next_f32(); // (0, 1] — логарифм определён
     (u.ln() / (1.0 - p).ln()).floor().max(1.0) as u64
 }
 
@@ -200,7 +228,7 @@ fn grass_spread(
     }
 
     let mut rng = event_rng(seed, tick, TAG_GRASS, chunk, local);
-    let target = dirt[rng.random_range(0..dirt.len())];
+    let target = dirt[rng.next_below(dirt.len())];
     world.set_terrain(target, TileType::Grass);
     dirty.terrain(target);
     // Новый тайл травы начинает собственную цепочку, источник продолжается,
@@ -243,7 +271,7 @@ fn bush_growth(
     }
 
     let mut rng = event_rng(seed, tick, TAG_BUSH, chunk, 0);
-    let idx = candidates[rng.random_range(0..candidates.len())];
+    let idx = candidates[rng.next_below(candidates.len())];
     let pos = tile_pos(chunk, idx);
     world.set_object(pos, Some(WorldObject::bush()));
     dirty.decor(pos);
@@ -274,7 +302,7 @@ fn water_erosion(
     }
 
     let mut rng = event_rng(seed, tick, TAG_EROSION, chunk, local);
-    let target = targets[rng.random_range(0..targets.len())];
+    let target = targets[rng.next_below(targets.len())];
     let kind = world.terrain_kind(target);
     world.set_terrain(target, eroded(kind));
     dirty.terrain(target);

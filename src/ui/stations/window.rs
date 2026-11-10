@@ -218,12 +218,13 @@ pub(crate) fn station_reach_close(
     let Some(pos) = station.pos else {
         return;
     };
-    let reachable = match (state.controlled, state.world.as_ref()) {
-        (Some(actor), Some(world)) => {
-            crate::simulation::actions::reachable(world, actor, pos)
-        }
-        _ => false,
-    };
+    let reachable = state.controlled_mind().is_some()
+        && match (state.controlled, state.world.as_ref()) {
+            (Some(actor), Some(world)) => {
+                crate::simulation::actions::reachable(world, actor, pos)
+            }
+            _ => false,
+        };
     if !reachable {
         station.open = false;
         station.selected = None;

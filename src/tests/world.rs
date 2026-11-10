@@ -57,3 +57,24 @@ fn world_size_clamped_and_snapped() {
     assert_eq!(WorldSize::MIN % 16, 0);
     assert_eq!(WorldSize::MAX % 16, 0);
 }
+
+/// Повторная пометка того же тайла в канале dirty не дублируется: иначе
+/// рендер и освещение получали бы лишние записи.
+#[test]
+fn dirty_tiles_deduplicate_within_channel() {
+    use crate::simulation::dirty::DirtyTiles;
+    use crate::simulation::world::TilePos;
+
+    let mut dirty = DirtyTiles::default();
+    let a = TilePos { x: 3, y: 4 };
+    dirty.terrain(a);
+    dirty.terrain(a);
+    dirty.decor(a);
+    dirty.decor(a);
+    assert_eq!(dirty.terrain, vec![a]);
+    assert_eq!(dirty.decor, vec![a]);
+    // Один и тот же тайл в разных каналах — не дубль (каналы независимы).
+    assert_eq!(dirty.terrain.len() + dirty.decor.len(), 2);
+    dirty.clear();
+    assert!(dirty.is_empty());
+}

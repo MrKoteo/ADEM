@@ -87,6 +87,8 @@ fn update_fps(
     if keys.just_pressed(KeyCode::F3) && !text_input_focused(&focus, &text_inputs) {
         *extended = !*extended;
     }
+    // Рендер не обходит детей блоков, пока расширенная панель закрыта.
+    metrics.extended = *extended;
 
     fps.frames = fps.frames.saturating_add(1);
     if fps.timer.tick(time.delta()).just_finished() {
@@ -131,7 +133,7 @@ fn update_fps(
             // Накопители рендера пересчитываются в «за секунду» (панель
             // ходит каждые 0.5 с).
             panel.push_str(&format!(
-                "\nБлоки: {}, спрайтов: {}\nDirty: рельеф {}/с, декор {}/с, перестроек {}/с, меши {:.1} мс/с",
+                "\nБлоки: {}, узлов декора: {}\nDirty: рельеф {}/с, декор {}/с, перестроек {}/с, меши {:.1} мс/с",
                 metrics.visible_blocks,
                 metrics.block_sprites,
                 (metrics.terrain_events as f32 / secs).round() as u32,

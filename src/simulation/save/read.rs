@@ -187,6 +187,8 @@ pub fn load_game(bytes: &[u8]) -> Result<SavedGame, SaveError> {
             item_entities,
             // Прогресс ломания — транзиент: после загрузки зажатие начинать заново.
             building_breaks: std::collections::HashMap::new(),
+            fauna_scratch: Default::default(),
+            item_scratch: Default::default(),
         },
         scheduler,
     })

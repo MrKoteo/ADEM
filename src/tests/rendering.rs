@@ -2,7 +2,7 @@
 //! а также UI-виджеты, не требующие графики (EditableText).
 
 use crate::rendering::{
-    BlockPos, build_block_mesh, dominant_atlas_index, lod_for_scale,
+    BlockPos, build_block_mesh, decor_visible_at, dominant_atlas_index, lod_for_scale,
 };
 
 /// UV-таблица тестового атласа тайлов: чистые тесты сборки меша не грузят
@@ -46,6 +46,16 @@ fn lod_grows_with_camera_scale() {
     assert_eq!(lod_for_scale(step * 8.0), 3);
     assert_eq!(lod_for_scale(step * 4096.0), MAX_LOD);
     assert_eq!(lod_for_scale(1_000_000.0), MAX_LOD);
+}
+
+/// Декор (объекты/предметы) существует только на LOD 0: иначе отдаление
+/// на большой карте создаёт десятки тысяч спрайтов на весь экран.
+#[test]
+fn decor_is_lod_zero_only() {
+    assert!(decor_visible_at(0));
+    assert!(!decor_visible_at(1));
+    assert!(!decor_visible_at(2));
+    assert!(!decor_visible_at(crate::rendering::MAX_LOD));
 }
 
 /// Счётчик предмета скрывается, когда он меньше четырёх экранных пикселей,

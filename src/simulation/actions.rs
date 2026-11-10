@@ -4,12 +4,14 @@
 //! захваченная сущность мира, а не отдельная структура: интерфейс отдаёт
 //! команды управляемому существу, оно исполняет их здесь. Поэтому все
 //! действия адресованы `SimEntity` по id и работают только у существ
-//! с «умом» (`HumanMind`); движение доступно и неразумным (захват волка).
-//! Команды `Command::Player*` и ИИ человека (simulation/ai.rs) вызывают
-//! одни и те же функции — правила действия едины для игрока и NPC.
+//! с «умом» (`HumanMind`); движение и выпас доступны и неразумным (захват
+//! волка/кролика). Команды `Command::Player*` и ИИ человека (simulation/ai.rs)
+//! вызывают одни и те же функции — правила действия едины для игрока и NPC.
 
 use super::crops::{Crop, CropKind};
-use super::entities::{EntityState, HumanMind};
+use super::entities::{
+    EntityKind, EntityState, HumanMind, RABBIT_GRAZE_AMOUNT, RABBIT_GRAZE_COOLDOWN_TICKS,
+};
 use super::hunger::Activity;
 use super::items::{ItemKind, ItemStack, MISC_SLOTS, ToolClass};
 use super::movement;
@@ -29,6 +31,15 @@ const BUILDING_BREAK_RESET_TICKS: u64 = 5;
 
 /// Сколько пучков травы даёт один травяной тайл: единица, как и у камня.
 const GRASS_YIELD_PER_TILE: u32 = 1;
+
+/// Вероятность, что после сбора травы тайл превращается в землю. Один тайл
+/// травы даёт в среднем `1 / GRASS_TO_DIRT_CHANCE` пучков (≈10): чаще всего
+/// трава остаётся и её можно собирать снова.
+const GRASS_TO_DIRT_CHANCE: f32 = 0.10;
+
+/// Соль броска превращения травы в землю — отдельный поток от других
+/// детерминированных бросков на тайле (вскапывание мотыгой).
+const GRASS_GATHER_ROLL_SALT: u64 = 0x51ED_270B_9E37_79B9;
 
 /// Шанс найти странный клубень при вскапывании тайла мотыгой.
 const STRANGE_TUBER_CHANCE: f32 = 0.04;
@@ -68,7 +79,8 @@ pub fn reachable(world: &World, actor: u64, pos: TilePos) -> bool {
     let center = WorldPos::of_tile_center(pos);
     let dx = center.x - from.x;
     let dy = center.y - from.y;
-    (dx * dx + dy * dy).sqrt() <= INTERACT_REACH
+    // Сравнение квадратов: sqrt не нужен для проверки радиуса.
+    dx * dx + dy * dy <= INTERACT_REACH * INTERACT_REACH
 }
 
 /// Вид рельефа под позицией. `None` — вне мира (считается сушей:
@@ -253,7 +265,9 @@ pub fn eat_selected(world: &mut World, actor: u64) -> bool {
 /// Порядок: объект на тайле (куст, валун) добывается как раньше;
 /// зрелая культура на пашне убирается; мотыга в руке пашет траву/землю
 /// в пашню; пустой травяной тайл даёт пучок травы пустой рукой или ножом.
-pub fn interact(world: &mut World, actor: u64, pos: TilePos) -> bool {
+/// `tick` нужен повторяемым правилам: сбор травы лишь с вероятностью
+/// превращает тайл в землю, и бросок должен меняться от попытки к попытке.
+pub fn interact(world: &mut World, actor: u64, pos: TilePos, tick: u64) -> bool {
     if !reachable(world, actor, pos) {
         return false;
     }
@@ -266,7 +280,7 @@ pub fn interact(world: &mut World, actor: u64, pos: TilePos) -> bool {
     if selected_item(world, actor).is_some_and(|kind| kind.tool_class() == Some(ToolClass::Hoe)) {
         return plow(world, actor, pos);
     }
-    gather_grass(world, actor, pos)
+    gather_grass(world, actor, pos, tick)
 }
 
 /// Уборка зрелой культуры: урожай в инвентарь, пашня остаётся.
@@ -432,30 +446,62 @@ fn harvest_object(world: &mut World, actor: u64, pos: TilePos, obj: WorldObject)
     true
 }
 
-/// Сбор травы пустой рукой или ножом: тайл даёт один пучок и превращается
-/// в землю. Другие предметы в руке траву не берут.
-fn gather_grass(world: &mut World, actor: u64, pos: TilePos) -> bool {
+/// Сбор травы пустой рукой или ножом: тайл даёт один пучок, а в землю
+/// превращается лишь с вероятностью `GRASS_TO_DIRT_CHANCE` (10%). Поэтому
+/// один тайл травы в среднем приносит ~10 пучков. Другие предметы в руке
+/// траву не берут.
+fn gather_grass(world: &mut World, actor: u64, pos: TilePos, tick: u64) -> bool {
     if !matches!(
         world.terrain_kind(pos),
         TileType::Grass | TileType::ForestGrass
     ) {
         return false;
     }
-    let selected = mind(world, actor).and_then(|m| m.selected_item());
-    let allowed = matches!(selected, None | Some(ItemKind::KnifePrimal));
-    if !allowed {
-        return false;
-    }
     let amount = GRASS_YIELD_PER_TILE;
-    let fits = mind(world, actor)
-        .is_some_and(|m| m.inventory.can_fit(ItemKind::GrassBunch, amount));
-    if !fits {
-        return false;
-    }
-    if let Some(m) = mind_mut(world, actor) {
+    // Пучок травы в руке не мешает: первый же собранный пучок автоматически
+    // попадает в выбранный слот, и без этого повторный сбор с того же тайла
+    // блокировался бы собственным результатом.
+    {
+        let Some(m) = mind_mut(world, actor) else {
+            return false;
+        };
+        let allowed = matches!(
+            m.selected_item(),
+            None | Some(ItemKind::KnifePrimal) | Some(ItemKind::GrassBunch)
+        );
+        if !allowed || !m.inventory.can_fit(ItemKind::GrassBunch, amount) {
+            return false;
+        }
         m.inventory.add(ItemKind::GrassBunch, amount);
     }
-    world.set_terrain(pos, TileType::Dirt);
+    let seed = world.seed;
+    // Бросок от (seed, тайл, тик): повторный сбор на том же тике не
+    // «застревает» на одном результате, а сохранение/загрузка его не меняет.
+    if action_roll(seed, pos, tick, GRASS_GATHER_ROLL_SALT) < GRASS_TO_DIRT_CHANCE {
+        world.set_terrain(pos, TileType::Dirt);
+    }
+    true
+}
+
+/// Выпас захваченного кролика (ЛКМ по траве): восстанавливает сытость,
+/// рельеф не меняется — как у автономного выпаса. Кулдаун общий с ИИ
+/// (`next_graze_tick`), чтобы игрок не кормил кролика без ограничений.
+/// `false` — не кролик, далеко, не трава или кулдаун ещё не вышел.
+pub fn graze(world: &mut World, actor: u64, pos: TilePos, tick: u64) -> bool {
+    let Some(entity) = world.entities.get(actor) else {
+        return false;
+    };
+    if entity.kind != EntityKind::Rabbit || tick < entity.next_graze_tick {
+        return false;
+    }
+    if !reachable(world, actor, pos) || !matches!( world.terrain_kind(pos), TileType::Grass | TileType::ForestGrass ) {
+        return false;
+    }
+    let Some(entity) = world.entities.get_mut(actor) else {
+        return false;
+    };
+    entity.hunger.eat(RABBIT_GRAZE_AMOUNT);
+    entity.next_graze_tick = tick + RABBIT_GRAZE_COOLDOWN_TICKS;
     true
 }
 
@@ -687,6 +733,21 @@ pub(crate) fn dig_roll(seed: u64, pos: TilePos) -> f32 {
     let mut h = seed
         ^ (pos.x as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
         ^ (pos.y as u64).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    h = h.wrapping_mul(0xD6E8_FEB8_6659_7B93);
+    h ^= h >> 32;
+    (h >> 40) as f32 / (1u32 << 24) as f32
+}
+
+/// Детерминированный бросок [0, 1) от (seed, тайл, тик, соль) для
+/// повторяемых действий. `salt` разводит независимые правила на одном
+/// тайле; тик входит в хэш, поэтому каждая попытка получает новый бросок,
+/// а воспроизводимость после загрузки сохранения сохраняется.
+pub(crate) fn action_roll(seed: u64, pos: TilePos, tick: u64, salt: u64) -> f32 {
+    let mut h = seed
+        ^ (pos.x as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        ^ (pos.y as u64).wrapping_mul(0xBF58_476D_1CE4_E5B9)
+        ^ tick.wrapping_mul(0x94D0_49BB_1331_11EB)
+        ^ salt;
     h = h.wrapping_mul(0xD6E8_FEB8_6659_7B93);
     h ^= h >> 32;
     (h >> 40) as f32 / (1u32 << 24) as f32

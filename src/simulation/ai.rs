@@ -187,7 +187,7 @@ impl World {
             HumanGoal::Campfire(fire) => self.tick_campfire_goal(id, fire, tick),
             HumanGoal::Food(tile) => self.tick_food_goal(id, tile),
             HumanGoal::Hunt(victim) => self.tick_hunt_goal(id, victim, tick),
-            HumanGoal::Gather(tile) => self.tick_gather_goal(id, tile),
+            HumanGoal::Gather(tile) => self.tick_gather_goal(id, tile, tick),
         }
     }
 
@@ -359,7 +359,7 @@ impl World {
     /// Цель «сбор»: дойти до куста и облупить его (палки в инвентарь,
     /// куст исчезает — он отрастает цепочкой BushGrowth). Куст уже не
     /// куст — цель исполнена или отменена.
-    fn tick_gather_goal(&mut self, id: u64, tile: super::world::TilePos) {
+    fn tick_gather_goal(&mut self, id: u64, tile: super::world::TilePos, tick: u64) {
         let center = WorldPos::of_tile_center(tile);
         let Some(entity) = self.entities.get(id) else {
             return;
@@ -369,7 +369,7 @@ impl World {
                 .object_at(tile)
                 .is_some_and(|o| o.kind == ObjectKind::Bush);
             if is_bush {
-                let _ = super::actions::interact(self, id, tile);
+                let _ = super::actions::interact(self, id, tile, tick);
             }
             self.set_goal(id, None);
             return;

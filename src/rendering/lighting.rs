@@ -18,7 +18,7 @@ use bevy::shader::ShaderRef;
 use bevy::sprite_render::{AlphaMode2d, Material2d};
 
 use crate::app::settings::Settings;
-use crate::app::state::{ClockRes, GameMode, GameState};
+use crate::app::state::{ClockRes, GameState};
 use crate::rendering::isometric::{WORLD_TILE_SIZE, world_position};
 use crate::simulation::{BuildingKind, ChunkPos, ItemKind, ObjectKind, TilePos, World, WorldPos, CHUNK_SIZE};
 
@@ -35,8 +35,10 @@ const TORCH_LIGHT_RADIUS_TILES: f32 = 2.5;
 const TORCH_LIGHT_RADIUS_PX: f32 = TORCH_LIGHT_RADIUS_TILES * WORLD_TILE_SIZE;
 /// Сила света костра; shader нормализует силу к этому значению.
 const CAMPFIRE_LIGHT_STRENGTH: f32 = 5.0;
-/// Период обновления позиции факела, секунд.
-const TORCH_POSITION_INTERVAL_SECS: f32 = 0.05;
+/// Период обновления позиций факелов, секунд. Выбор предмета проверяется
+/// отдельно каждый кадр для захваченного существа, поэтому 10 Гц достаточно
+/// для фонового пересканирования NPC.
+const TORCH_POSITION_INTERVAL_SECS: f32 = 0.1;
 
 /// Границы переходов суток в часах: рассвет 5–7, закат 18–20.
 const DAWN_START_H: f32 = 5.0;
@@ -88,11 +90,19 @@ impl Material2d for DarknessMaterial {
 
 /// Реестр горящих костров мира (тайлы). Костров мало, а изменения
 /// объектов проходят через команды и оставляют dirty-тайлы — реестр
-/// сверяется по ним, без обхода мира каждый кадр.
+/// сверяется по ним, без обхода мира каждый кадр. Факелы в руках — всех
+/// разумных существ, не только захваченного: динамический свет принадлежит
+/// людям, а не режиму управления.
 #[derive(Resource, Default)]
 pub(crate) struct CampfireLights {
     positions: HashSet<TilePos>,
-    torch_position: Option<WorldPos>,
+    /// Позиции факелов в руках людей (мировые координаты).
+    torch_positions: Vec<WorldPos>,
+    /// Переиспользуемый буфер пересканирования факелов.
+    torch_scratch: Vec<WorldPos>,
+    /// Был ли факел в руке захваченного существа на прошлом кадре: смена
+    /// слота форсирует пересканирование, не дожидаясь периода.
+    controlled_torch: bool,
     torch_refresh_secs: f32,
     /// Счётчик изменений реестра: оверлей тьмы по нему понимает, что набор
     /// огней изменился, не сравнивая множества каждый кадр.
@@ -107,21 +117,21 @@ pub(crate) struct DarknessOverlay {
     mesh: Option<Handle<Mesh>>,
     material: Option<Handle<DarknessMaterial>>,
     fire_positions: Option<Handle<ShaderBuffer>>,
-    /// Кадр, на который собран оверлей. Пока ключ не изменился, меш, буфер
-    /// огней и материал не трогаются — иначе каждый ночной кадр получал бы
-    /// AssetEvent::Modified и лишнюю подготовку материала.
-    last_frame: Option<OverlayFrame>,
+    /// Для какого прямоугольника камеры собран меш оверлея.
+    last_view: Option<(Vec2, Vec2)>,
+    /// Состояние, от которого зависит содержимое буфера огней.
+    last_fires: Option<FiresKey>,
+    /// Последняя затемнённость, записанная в материал.
+    last_darkness: Option<f32>,
 }
 
-/// Состояние кадра, от которого зависит содержимое оверлея тьмы. Поворота
-/// камеры нет (ARCHITECTURE 5), поэтому достаточно переноса камеры.
-#[derive(Clone, PartialEq)]
-struct OverlayFrame {
-    darkness: f32,
+/// Ключ содержимого буфера огней: набор огней, камера и видимая область.
+#[derive(Clone, Copy, PartialEq)]
+struct FiresKey {
+    version: u64,
+    camera_translation: Vec3,
     view_min: Vec2,
     view_max: Vec2,
-    camera_translation: Vec3,
-    fires_version: u64,
 }
 
 /// Держит реестр костров в соответствии с миром. Полный пересбор — после
@@ -129,30 +139,43 @@ struct OverlayFrame {
 /// точечная сверка по изменённым тайлам обоих каналов (рельеф и декор:
 /// костёр — объект, но заодно проверяется и рельеф под ним). Запускается
 /// до `render_world`, который изымает dirty-тайлы.
+///
+/// Факелы в руках пересканируются не чаще `TORCH_POSITION_INTERVAL_SECS`:
+/// выбор предмета не оставляет события, а ходьба двигает огонь. Обычный
+/// проход по `EntityStore` дешевле, чем событийный канал на каждый слот.
 pub(crate) fn update_campfire_positions(
     time: Res<Time>,
     state: Res<GameState>,
     mut lights: ResMut<CampfireLights>,
 ) {
-    let torch_position = (state.mode == GameMode::Player)
-        .then(|| state.controlled_entity())
-        .flatten()
-        .filter(|entity| {
-            entity
-                .mind
-                .as_ref()
-                .is_some_and(|mind| mind.selected_item() == Some(ItemKind::Torch))
-        })
-        .map(|entity| entity.pos);
+    let controlled_torch = state
+        .controlled_mind()
+        .is_some_and(|mind| mind.selected_item() == Some(ItemKind::Torch));
+    let force = controlled_torch != lights.controlled_torch;
+    lights.controlled_torch = controlled_torch;
     lights.torch_refresh_secs -= time.delta_secs();
-    if lights.torch_position.is_some() != torch_position.is_some()
-        || lights.torch_refresh_secs <= 0.0
-    {
+    if lights.torch_refresh_secs <= 0.0 || force {
         lights.torch_refresh_secs = TORCH_POSITION_INTERVAL_SECS;
-        if lights.torch_position != torch_position {
-            lights.torch_position = torch_position;
+        let mut torches = std::mem::take(&mut lights.torch_scratch);
+        torches.clear();
+        if let Some(world) = state.world.as_ref() {
+            for entity in world.entities.iter() {
+                // Факел освещает у всех людей с «умом»: у животных его нет.
+                if entity
+                    .mind
+                    .as_ref()
+                    .is_some_and(|mind| mind.selected_item() == Some(ItemKind::Torch))
+                {
+                    torches.push(entity.pos);
+                }
+            }
+        }
+        if torches != lights.torch_positions {
+            std::mem::swap(&mut lights.torch_positions, &mut torches);
             lights.version += 1;
         }
+        // Возвращаем буфер с сохранённой ёмкостью.
+        lights.torch_scratch = torches;
     }
 
     let Some(world) = state.world.as_ref() else {
@@ -226,7 +249,8 @@ pub(crate) fn update_darkness_overlay(
             commands.entity(entity).insert(Visibility::Hidden);
         }
         // После включения оверлей собирается заново, даже если кадр совпадёт.
-        overlay.last_frame = None;
+        overlay.last_view = None;
+        overlay.last_fires = None;
         return;
     }
 
@@ -242,7 +266,8 @@ pub(crate) fn update_darkness_overlay(
             commands.entity(entity).insert(Visibility::Hidden);
         }
         // После скрытия оверлей собирается заново, даже если кадр совпадёт.
-        overlay.last_frame = None;
+        overlay.last_view = None;
+        overlay.last_fires = None;
         return;
     }
 
@@ -263,18 +288,34 @@ pub(crate) fn update_darkness_overlay(
 
     // Кадр не изменился (стоячая камера, стабильная тьма, костры те же):
     // собранный оверлей уже корректен и видим — ничего не трогаем.
-    let frame = OverlayFrame {
-        darkness,
-        view_min,
-        view_max,
-        camera_translation: camera_transform.translation,
-        fires_version: lights.version,
-    };
-    if overlay.last_frame.as_ref() == Some(&frame) {
-        return;
-    }
     let world_to_camera = camera_transform.to_matrix().inverse();
 
+    // Меш оверлея зависит только от видимого прямоугольника. Камера может
+    // двигаться каждый кадр — вершины при этом не меняются.
+    if overlay.last_view != Some((view_min, view_max)) {
+        let handle = overlay
+            .mesh
+            .get_or_insert_with(|| meshes.add(Mesh::new(
+                PrimitiveTopology::TriangleList,
+                RenderAssetUsages::default(),
+            )))
+            .clone();
+        let mut mesh = meshes
+            .get_mut(&handle)
+            .expect("darkness overlay mesh asset must exist");
+        rebuild_darkness_mesh(&mut mesh, view_min, view_max);
+        overlay.last_view = Some((view_min, view_max));
+    }
+
+    // Буфер огней пересобирается только при изменении набора/позиций огней
+    // или камеры: сортировка и построение списка не нужны каждый кадр.
+    let fires_key = FiresKey {
+        version: lights.version,
+        camera_translation: camera_transform.translation,
+        view_min,
+        view_max,
+    };
+    if overlay.last_fires != Some(fires_key) {
     // Центры костров в мировых пикселях; костры вне области с запасом
     // света всё равно не дают вклада — отсекаем их до построения сетки.
     // Сортировка по X: фрагментный шейдер ищёт окно огней бинарным
@@ -299,7 +340,7 @@ pub(crate) fn update_darkness_overlay(
                 && fire.0.y <= view_max.y + fire.1
         })
         .collect();
-    if let Some(position) = lights.torch_position {
+    for position in &lights.torch_positions {
         let camera_position = world_position(world, Vec2::new(position.x, position.y));
         let position = world_to_camera.transform_point3(camera_position).truncate();
         if position.x >= view_min.x - TORCH_LIGHT_RADIUS_PX
@@ -311,18 +352,6 @@ pub(crate) fn update_darkness_overlay(
         }
     }
     fires.sort_by(|a, b| a.0.x.total_cmp(&b.0.x));
-
-    let mesh = overlay
-        .mesh
-        .get_or_insert_with(|| meshes.add(Mesh::new(
-            PrimitiveTopology::TriangleList,
-            RenderAssetUsages::default(),
-        )));
-    let handle = mesh.clone();
-    let mut mesh = meshes
-        .get_mut(&handle)
-        .expect("darkness overlay mesh asset must exist");
-    rebuild_darkness_mesh(&mut mesh, view_min, view_max);
 
     if overlay.fire_positions.is_none() {
         overlay.fire_positions = Some(buffers.add(ShaderBuffer::from(vec![[0.0; 4]])));
@@ -349,22 +378,44 @@ pub(crate) fn update_darkness_overlay(
         );
     }
 
+    }
+
+    // Материал создаётся один раз, затем меняются только параметры
+    // затемнения (плавно в течение суток).
     if overlay.material.is_none() {
+        let fire_positions = overlay
+            .fire_positions
+            .as_ref()
+            .expect("fire position buffer exists after the first fire update")
+            .clone();
         overlay.material = Some(materials.add(DarknessMaterial {
             params: Vec4::new(darkness, LIGHT_RADIUS_PX, CAMPFIRE_LIGHT_STRENGTH, 0.0),
             fire_positions,
         }));
+        overlay.last_darkness = Some(darkness);
+    } else if overlay.last_darkness != Some(darkness) {
+        let handle = overlay
+            .material
+            .as_ref()
+            .expect("darkness material was just initialized")
+            .clone();
+        materials
+            .get_mut(&handle)
+            .expect("darkness material asset must exist")
+            .params = Vec4::new(darkness, LIGHT_RADIUS_PX, CAMPFIRE_LIGHT_STRENGTH, 0.0);
+        overlay.last_darkness = Some(darkness);
     }
+
+    let mesh = overlay
+        .mesh
+        .as_ref()
+        .expect("darkness mesh exists after the view rebuild")
+        .clone();
     let material = overlay
         .material
         .as_ref()
         .expect("darkness material was just initialized")
         .clone();
-    materials
-        .get_mut(&material)
-        .expect("darkness material asset must exist")
-        .params = Vec4::new(darkness, LIGHT_RADIUS_PX, CAMPFIRE_LIGHT_STRENGTH, 0.0);
-
     let transform = *camera_transform;
     match overlay.entity {
         Some(entity) => {
@@ -373,7 +424,7 @@ pub(crate) fn update_darkness_overlay(
         None => {
             let entity = commands
                 .spawn((
-                    Mesh2d(handle),
+                    Mesh2d(mesh),
                     MeshMaterial2d(material),
                     transform,
                     Visibility::Visible,
@@ -382,7 +433,6 @@ pub(crate) fn update_darkness_overlay(
             overlay.entity = Some(entity);
         }
     }
-    overlay.last_frame = Some(frame);
 }
 
 /// Деспавнит оверлей (мир отсутствует).
@@ -390,7 +440,9 @@ fn despawn_overlay(commands: &mut Commands, overlay: &mut DarknessOverlay) {
     if let Some(entity) = overlay.entity.take() {
         commands.entity(entity).despawn();
     }
-    overlay.last_frame = None;
+    overlay.last_view = None;
+    overlay.last_fires = None;
+    overlay.last_darkness = None;
 }
 
 /// Четыре вершины и два треугольника покрывают видимую область с запасом.

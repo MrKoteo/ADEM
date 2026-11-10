@@ -16,7 +16,7 @@ use crate::simulation::actions;
 use crate::simulation::commands::Command;
 use crate::simulation::crops::CropKind;
 use crate::simulation::items::ItemKind;
-use crate::simulation::{TILE_SIZE, TilePos, TileType};
+use crate::simulation::{EntityKind, TILE_SIZE, TilePos, TileType};
 use crate::ui::UiFont;
 use crate::ui::pause_menu::BindingCapture;
 use crate::ui::{BlocksWorldInput, cursor_over_ui, text_input_focused};
@@ -239,23 +239,27 @@ pub(crate) fn world_click_input(
     let Some(tile) = cursor_world_tile(window, &cameras, Some(world)) else {
         return;
     };
-    // Неразумное захваченное (волк): ЛКМ — укус по курсору с тем же
-    // автоповтором зажатия, что у удара человека. Кусь — единственное
-    // действие волка: ломать постройки и добывать он не умеет, поэтому
-    // ветки ниже (ломание, лук, копьё, добыча) ему недоступны.
+    // Неразумное захваченное существо: ЛКМ — видовое действие по курсору
+    // с автоповтором зажатия. Волк кусает (`PlayerBite`), кролик ест
+    // траву (`PlayerGraze`). Ломать постройки и добывать они не умеют,
+    // поэтому ветки ниже (ломание, лук, копьё, добыча) им недоступны.
     if !p.kind.is_sentient() {
+        let action = |tile: TilePos| match p.kind {
+            EntityKind::Rabbit => Command::PlayerGraze { pos: tile },
+            _ => Command::PlayerBite { pos: tile },
+        };
         if !mouse.pressed(MouseButton::Left) {
             *hold = HarvestHold::default();
             return;
         }
         if mouse.just_pressed(MouseButton::Left) {
-            queue.0.push(Command::PlayerBite { pos: tile });
+            queue.0.push(action(tile));
             hold.cooldown = INTERACT_REPEAT_SECS;
             return;
         }
         hold.cooldown -= time.delta_secs();
         if hold.cooldown <= 0.0 {
-            queue.0.push(Command::PlayerBite { pos: tile });
+            queue.0.push(action(tile));
             hold.cooldown =
                 INTERACT_REPEAT_SECS - (-hold.cooldown).rem_euclid(INTERACT_REPEAT_SECS);
         }
@@ -577,8 +581,9 @@ fn rmb_action(
         return;
     };
     // Станция под курсором — открыть её GUI (приоритет над всем остальным),
-    // только если она в радиусе взаимодействия с тайлами.
-    if let Some(kind) = world
+    // только если она в радиусе взаимодействия с тайлами. Неразумным
+    // (волк, кролик) рабочие станции недоступны: GUI и инвентаря у них нет.
+    if state.controlled_mind().is_some() && let Some(kind) = world
         .object_at(tile)
         .map(|obj| obj.kind)
         .filter(|kind| kind.is_station())

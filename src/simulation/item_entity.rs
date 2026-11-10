@@ -8,6 +8,7 @@
 //! дёшево); рендер читает только видимые.
 
 use super::items::ItemStack;
+use super::spatial::SpatialGrid;
 use super::world::{World, WorldPos};
 
 /// Радиус автоподбора: игрок подбирает предмет при приближении, тайлов.
@@ -79,6 +80,14 @@ pub struct ItemEntity {
 pub struct ItemEntities {
     pub items: Vec<ItemEntity>,
     next_id: u64,
+}
+
+/// Переиспользуемые сетки едоков: люди подбирают дроп, голодные волки едят
+/// мясо. Лежат в `World`, не сохраняются.
+#[derive(Default)]
+pub(crate) struct ItemScratch {
+    pub(crate) humans: SpatialGrid,
+    pub(crate) wolves: SpatialGrid,
 }
 
 impl ItemEntities {
@@ -210,6 +219,7 @@ impl ItemEntities {
     }
 
     /// Сущность по id (для рендера).
+    #[allow(dead_code)] // читается тестами/будущими системами
     pub fn get(&self, id: u64) -> Option<&ItemEntity> {
         self.items.iter().find(|entity| entity.id == id)
     }
@@ -235,20 +245,22 @@ impl World {
     pub fn tick_item_entities(&mut self, tick: u64) {
         self.item_entities.tick(tick);
 
-        // Позиции едоков снимаются один раз за тик: люди (подбор в
-        // инвентарь) и голодные волки (поедание мяса с земли).
-        let humans: Vec<(u64, super::world::WorldPos)> = self
-            .entities
-            .iter()
-            .filter(|e| e.mind.is_some())
-            .map(|e| (e.id, e.pos))
-            .collect();
-        let wolves: Vec<(u64, super::world::WorldPos)> = self
-            .entities
-            .iter()
-            .filter(|e| e.kind == super::entities::EntityKind::Wolf && e.hunger.value() < WOLF_EAT_BELOW)
-            .map(|e| (e.id, e.pos))
-            .collect();
+        // Сетки едоков строятся один раз за тик: поиск ближайшего — по
+        // соседним ячейкам, а не перебором всех людей/волков на каждый
+        // предмет. Буферы переиспользуются между тиками.
+        let mut scratch = std::mem::take(&mut self.item_scratch);
+        scratch.humans.clear();
+        scratch.wolves.clear();
+        for entity in self.entities.iter() {
+            if entity.mind.is_some() {
+                scratch.humans.insert(entity.id, entity.pos);
+            }
+            if entity.kind == super::entities::EntityKind::Wolf
+                && entity.hunger.value() < WOLF_EAT_BELOW
+            {
+                scratch.wolves.insert(entity.id, entity.pos);
+            }
+        }
 
         let mut leftover_ids = Vec::new();
         for entity in self.item_entities.items.iter_mut() {
@@ -261,16 +273,9 @@ impl World {
             // за тик (глотает на месте, без инвентаря). При равенстве
             // дистанций — меньший id (детерминизм).
             if stack.kind.is_wolf_food()
-                && let Some((wolf_id, _)) = wolves
-                    .iter()
-                    .filter(|(_, pos)| pos.dist(entity.pos) <= WOLF_EAT_RADIUS)
-                    .min_by(|a, b| {
-                        a.1.dist(entity.pos)
-                            .total_cmp(&b.1.dist(entity.pos))
-                            .then_with(|| a.0.cmp(&b.0))
-                    })
+                && let Some((wolf_id, _)) = scratch.wolves.nearest(entity.pos, WOLF_EAT_RADIUS)
             {
-                let Some(wolf) = self.entities.get_mut(*wolf_id) else {
+                let Some(wolf) = self.entities.get_mut(wolf_id) else {
                     continue;
                 };
                 wolf.hunger.eat(stack.kind.food_value());
@@ -283,20 +288,12 @@ impl World {
 
             // Ближайший человек в радиусе подбора (при равенстве — меньший id:
             // выбор стабильный и детерминированный).
-            let Some((picker, _)) = humans
-                .iter()
-                .filter(|(_, pos)| pos.dist(entity.pos) <= PICKUP_RADIUS)
-                .min_by(|a, b| {
-                    a.1.dist(entity.pos)
-                        .total_cmp(&b.1.dist(entity.pos))
-                        .then_with(|| a.0.cmp(&b.0))
-                })
-            else {
+            let Some((picker, _)) = scratch.humans.nearest(entity.pos, PICKUP_RADIUS) else {
                 continue;
             };
             let Some(m) = self
                 .entities
-                .get_mut(*picker)
+                .get_mut(picker)
                 .and_then(|e| e.mind.as_mut())
             else {
                 continue;
@@ -315,5 +312,6 @@ impl World {
                 .items
                 .retain(|entity| !leftover_ids.contains(&entity.id));
         }
+        self.item_scratch = scratch;
     }
 }

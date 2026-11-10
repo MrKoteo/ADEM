@@ -22,6 +22,7 @@ pub mod needs;
 pub mod objects;
 pub mod save;
 pub mod scheduler;
+pub mod spatial;
 pub mod tile;
 pub mod time;
 pub mod vegetation;

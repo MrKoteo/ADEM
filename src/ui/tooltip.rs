@@ -14,7 +14,7 @@ use bevy::prelude::*;
 use crate::app::state::{GameMode, GameState, MenuKind};
 use crate::simulation::containers;
 use crate::ui::bottom_panel::{self, PanelAction};
-use crate::simulation::items::{ItemKind, SlotRef};
+use crate::simulation::items::{ItemKind, SlotRef, ITEM_KIND_COUNT};
 use crate::ui::cursor_over_node;
 use crate::ui::UiFont;
 use crate::ui::creative::CreativeTile;
@@ -34,10 +34,12 @@ impl Plugin for TooltipPlugin {
     }
 }
 
-/// Названия предметов по строковым идентификаторам (`ItemKind::id`).
+/// Названия предметов, разложенные по дискриминанту `ItemKind`: вместо
+/// поиска в `HashMap` по строковому id на каждый кадр/тултип — прямой
+/// индекс массива.
 #[derive(Resource, Default)]
 pub struct ItemNames {
-    names: HashMap<String, String>,
+    names: Vec<Option<String>>,
 }
 
 impl ItemNames {
@@ -45,8 +47,8 @@ impl ItemNames {
     /// новый предмет не оставался безымянным до правки данных.
     pub fn name(&self, kind: ItemKind) -> String {
         self.names
-            .get(kind.id())
-            .cloned()
+            .get(kind as usize)
+            .and_then(|name| name.clone())
             .unwrap_or_else(|| kind.id().to_string())
     }
 }
@@ -66,16 +68,27 @@ struct ItemEntry {
 /// Читает названия один раз при старте. Ошибка файла — предупреждение в
 /// лог, игра работает с id-названиями.
 fn load_item_names(mut commands: Commands) {
-    let mut names = ItemNames::default();
+    let mut names = ItemNames {
+        names: vec![None; ITEM_KIND_COUNT],
+    };
     match std::fs::read_to_string("info/items.json")
         .map_err(|e| e.to_string())
         .and_then(|text| serde_json::from_str::<ItemsFile>(&text).map_err(|e| e.to_string()))
     {
         Ok(file) => {
-            for entry in file.items {
-                names.names.insert(entry.id, entry.name);
+            let mut by_id: HashMap<String, String> = file
+                .items
+                .into_iter()
+                .map(|entry| (entry.id, entry.name))
+                .collect();
+            let mut loaded = 0;
+            for kind in ItemKind::ALL {
+                if let Some(name) = by_id.remove(kind.id()) {
+                    names.names[kind as usize] = Some(name);
+                    loaded += 1;
+                }
             }
-            debug!("Загружено названий предметов: {}", names.names.len());
+            debug!("Загружено названий предметов: {loaded}");
         }
         Err(error) => {
             warn!("Тултипы: info/items.json не прочитан ({error}); названия предметов = id");

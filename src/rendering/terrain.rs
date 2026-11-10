@@ -25,7 +25,7 @@ use crate::simulation::{ChunkPos, TerrainTiles, TilePos, TileType, World, CHUNK_
 use crate::ui::UiFont;
 
 use super::isometric::{WORLD_TILE_SIZE, tile_elevation};
-use super::sprites::{spawn_crops, spawn_items, spawn_objects};
+use super::sprites::spawn_block_decor;
 use super::textures::TextureAtlases;
 
 /// Сторона terrain-блока в тайлах. 64 делит все поддерживаемые размеры мира.
@@ -45,6 +45,20 @@ const BUILD_BLOCKS_BASE: usize = 4;
 
 /// Верхняя граница бюджета построения блоков за кадр.
 const BUILD_BLOCKS_MAX: usize = 32;
+
+/// Максимальный LOD, на котором рисуются объекты и предметы блока.
+///
+/// Декор рисуется только вплотную к камере. На LOD 1 ячейка уже 2×2 тайла,
+/// а видимая область большой карты (2048²) покрывает ~1800×1000 тайлов:
+/// пер-тайловые спрайты давали десятки тысяч Bevy-сущностей и роняли FPS
+/// даже при том, что сами предметы — точки в несколько пикселей. Дальше
+/// LOD 0 декор не создаётся вовсе; вид на дальних планах задаёт рельеф.
+const DECOR_MAX_LOD: u32 = 0;
+
+/// Рисуется ли декор (объекты, культуры, предметы) на этом LOD.
+pub(crate) fn decor_visible_at(lod: u32) -> bool {
+    lod == DECOR_MAX_LOD
+}
 
 /// Запас вокруг видимой области, в тайлах (деревья выступают за свой тайл).
 const VIEW_MARGIN_TILES: f32 = 10.0;
@@ -91,6 +105,11 @@ pub(crate) struct TerrainRender {
     pub(crate) incoming: Option<IncomingLod>,
     pub(crate) blocks_per_side: i32,
     pub(crate) lod: u32,
+    /// Последний желаемый (по масштабу) LOD и сколько он держится: переход
+    /// запускается только после `LOD_SETTLE_SECS`, чтобы зум колесом не
+    /// перезапускал сборку сцены каждый кадр.
+    pub(crate) desired_lod: u32,
+    pub(crate) desired_lod_secs: f32,
     /// Множитель цвета terrain-тайлов по чанкам, задаваемый линзами.
     pub(crate) lens_tints: Arc<HashMap<ChunkPos, [f32; 4]>>,
 }
@@ -121,7 +140,37 @@ pub(crate) struct RenderMetrics {
     /// Спрайтов-детей terrain-блоков на текущий кадр (объекты, предметы,
     /// счётчики).
     pub(crate) block_sprites: u32,
+    /// Включён ли расширенный режим F3. Панель выставляет флаг; вне F3
+    /// дорогие счётчики (обход детей блоков) не считаются.
+    pub(crate) extended: bool,
+    /// Остаток до следующего пересчёта `block_sprites`, секунд.
+    pub(crate) sprites_refresh_secs: f32,
 }
+
+/// Ключ видимой области: пока камера/окно не изменились, список видимых
+/// блоков не пересобирается (сортировка и HashSet на 1000+ блоков — не
+/// бесплатные).
+#[derive(Clone, Copy, PartialEq)]
+struct VisibleKey {
+    translation: Vec3,
+    rotation: Quat,
+    scale: f32,
+    viewport: Vec2,
+    world_tiles: i32,
+    blocks_per_side: i32,
+}
+
+/// Кэш видимой области между кадрами.
+#[derive(Default)]
+pub(crate) struct VisibleCache {
+    key: Option<VisibleKey>,
+    blocks: Vec<BlockPos>,
+    set: HashSet<BlockPos>,
+}
+
+/// Пауза стабилизации зума перед запуском перехода LOD: пока колесо
+/// крутится, не начинаем новую сцену каждые несколько кадров.
+const LOD_SETTLE_SECS: f32 = 0.12;
 
 /// Метка сущности terrain-блока.
 #[derive(Component)]
@@ -152,6 +201,7 @@ pub(crate) fn ensure_ground_material(
 /// Перерисовывает видимые блоки мира и их деревья.
 pub(crate) fn render_world(
     mut commands: Commands,
+    time: Res<Time>,
     mut state: ResMut<GameState>,
     mut render: ResMut<TerrainRender>,
     mut metrics: ResMut<RenderMetrics>,
@@ -163,6 +213,8 @@ pub(crate) fn render_world(
     font: Res<UiFont>,
     camera: Query<(&Camera, &Transform, &Projection), With<WorldCamera>>,
     terrain_blocks: Query<&Children, With<TerrainBlock>>,
+    mut mesh_scratch: Local<BlockMeshScratch>,
+    mut visible_cache: Local<VisibleCache>,
 ) {
     // Мир перегенерирован: убираем обе сцены и начинаем с нуля.
     if state.pending_rerender {
@@ -175,6 +227,8 @@ pub(crate) fn render_world(
             .map(|world| blocks_per_side(world.size.tiles() as i32))
             .unwrap_or(0);
         render.lod = 0;
+        render.desired_lod = 0;
+        render.desired_lod_secs = 0.0;
     }
 
     // Изменённые тайлы изымаются до заимствования мира: список
@@ -209,7 +263,7 @@ pub(crate) fn render_world(
         rebuild_dirty_blocks(
             &mut commands, &mut meshes, &mut materials, &mut sprite_assets, world,
             &material, camera_transform.rotation, &atlases, &font,
-            &dirty.terrain, &mut render, &mut metrics, &lens_tints,
+            &dirty.terrain, &mut render, &mut metrics, &lens_tints, &mut mesh_scratch,
         );
     }
     // Объекты и предметы (декор) не меняют геометрию меша: достаточно
@@ -232,27 +286,59 @@ pub(crate) fn render_world(
     let world_tiles = world.size.tiles() as i32;
     let half_view = viewport_size * (ortho.scale * 0.5);
     let margin = VIEW_MARGIN_TILES * WORLD_TILE_SIZE;
-    let mut visible = Vec::new();
-    collect_visible_blocks(
-        0, 0, render.blocks_per_side, render.blocks_per_side, world_tiles, 
-        camera_transform, half_view, margin, ortho.near, ortho.far, &mut visible,
-    );
+
+    // Видимая область пересобирается только при изменении камеры, окна или
+    // мира: в остальные кадры переиспользуются готовый список и множество.
+    let key = VisibleKey {
+        translation: camera_transform.translation,
+        rotation: camera_transform.rotation,
+        scale: ortho.scale,
+        viewport: viewport_size,
+        world_tiles,
+        blocks_per_side: render.blocks_per_side,
+    };
+    if visible_cache.key != Some(key) {
+        let forward = camera_transform.rotation * -Vec3::Z;
+        let view_center = camera_transform.translation
+            + forward * (-camera_transform.translation.z / forward.z);
+        let view_center = view_center.truncate();
+        visible_cache.blocks.clear();
+        collect_visible_blocks(
+            0, 0, render.blocks_per_side, render.blocks_per_side, world_tiles,
+            camera_transform, half_view, margin, ortho.near, ortho.far, &mut visible_cache.blocks,
+        );
+        // Строим недостающие блоки от центра экрана наружу.
+        visible_cache.blocks.sort_by(|a, b| {
+            block_distance_sq(*a, view_center).total_cmp(&block_distance_sq(*b, view_center))
+        });
+        visible_cache.set.clear();
+        let VisibleCache { blocks, set, .. } = &mut *visible_cache;
+        set.extend(blocks.iter().copied());
+        visible_cache.key = Some(key);
+    }
+    let visible = &visible_cache.blocks;
+    let visible_set = &visible_cache.set;
     if visible.is_empty() {
         clear_all_blocks(&mut commands, &mut meshes, &mut render);
         return;
     }
 
-    // Строим недостающие блоки от центра экрана наружу, с бюджетом на кадр.
-    let forward = camera_transform.rotation * -Vec3::Z;
-    let view_center = camera_transform.translation  +  forward * (-camera_transform.translation.z / forward.z);
-    let view_center = view_center.truncate();
-    visible.sort_by(|a, b| {
-        block_distance_sq(*a, view_center).total_cmp(&block_distance_sq(*b, view_center))
-    });
-    let visible_set: HashSet<BlockPos> = visible.iter().copied().collect();
-
     let lenses_enabled = state.lenses.sentients || state.lenses.buildings;
-    let lod = lod_for_scale(ortho.scale).min(if lenses_enabled { 4 } else { MAX_LOD });
+    let raw_lod = lod_for_scale(ortho.scale).min(if lenses_enabled { 4 } else { MAX_LOD });
+    // Переход LOD стартует только после короткой паузы зума: иначе колесо
+    // перезапускает `incoming` каждые несколько кадров и выбрасывает работу.
+    if raw_lod == render.desired_lod {
+        render.desired_lod_secs += time.delta_secs();
+    } else {
+        render.desired_lod = raw_lod;
+        render.desired_lod_secs = 0.0;
+    }
+    let lod_settled = render.desired_lod_secs >= LOD_SETTLE_SECS;
+    let lod = if lod_settled {
+        raw_lod
+    } else {
+        render.incoming.as_ref().map_or(render.lod, |inc| inc.lod)
+    };
 
     // Управление переходом: активная сцена остаётся на экране, пока строится новая.
     match lod_transition_for(lod, render.lod, render.incoming.as_ref().map(|inc| inc.lod)) {
@@ -277,17 +363,18 @@ pub(crate) fn render_world(
     }
 
     // Убираем блоки активной сцены, которые перестали быть видимыми.
-    if render.incoming.is_none() {
-        let stale: Vec<BlockPos> = render
-            .active
-            .keys()
-            .copied()
-            .filter(|pos| !visible_set.contains(pos))
-            .collect();
-        for pos in stale {
-            if let Some(block) = render.active.remove(&pos) {
-                despawn_block(&mut commands, &mut meshes, block);
-            }
+    // Проверка работает и во время LOD-перехода: невидимые блоки не нужны
+    // ни старой сцене (они за кадром), ни новой — а накопление таких блоков
+    // с их пер-тайловым декором и было «утечкой» при быстром отдалении.
+    let stale: Vec<BlockPos> = render
+        .active
+        .keys()
+        .copied()
+        .filter(|pos| !visible_set.contains(pos))
+        .collect();
+    for pos in stale {
+        if let Some(block) = render.active.remove(&pos) {
+            despawn_block(&mut commands, &mut meshes, block);
         }
     }
     let budget = (BUILD_BLOCKS_BASE << lod.min(3)).min(BUILD_BLOCKS_MAX);
@@ -295,8 +382,11 @@ pub(crate) fn render_world(
 
     // Во время перехода активную сцену не наращиваем: она всё равно будет
     // заменена целиком, а бюджет нужен на новую. Достраивание работает,
-    // только когда перехода нет.
-    if render.incoming.is_none() {
+    // только когда перехода нет. Пока зум не стабилизировался и желаемый
+    // LOD отличается от активного, тоже не строим: иначе в паузе дебаунса
+    // успели бы собраться блоки старого LOD с декором.
+    let stale_lod = !lod_settled && raw_lod != render.lod;
+    if render.incoming.is_none() && !stale_lod {
         for block in visible.iter().copied() {
             if built_now >= budget {
                 break;
@@ -314,7 +404,7 @@ pub(crate) fn render_world(
             let built = build_block(
                 &mut commands, &mut meshes, &mut materials, &mut sprite_assets, world,
                 &material, camera_transform.rotation, &atlases, &font,
-                &mut metrics, block, lod, &lens_tints,
+                &mut metrics, block, lod, &lens_tints, &mut mesh_scratch,
             );
             render.active.insert(block, built);
             built_now += 1;
@@ -345,7 +435,7 @@ pub(crate) fn render_world(
                 &mut commands, &mut meshes, &mut materials, &mut sprite_assets,
                 world, &material,
                 camera_transform.rotation, &atlases, &font, &mut metrics, block, incoming_lod,
-                &lens_tints,
+                &lens_tints, &mut mesh_scratch,
             );
             commands.entity(built.entity).insert(Visibility::Hidden);
             blocks.insert(block, built);
@@ -357,18 +447,24 @@ pub(crate) fn render_world(
     }
     if swap_ready {
         promote_incoming(
-            &mut commands, &mut meshes, &mut render, &visible_set,
+            &mut commands, &mut meshes, &mut render, visible_set,
         );
     }
 
     // Абсолютные счётчики текущего кадра (панель показывает их без пересчёта).
     metrics.visible_blocks = render.active.len() as u32;
-    metrics.block_sprites = render
-        .active
-        .values()
-        .filter_map(|block| terrain_blocks.get(block.entity).ok())
-        .map(|children| children.len() as u32)
-        .sum();
+    // Обход всех детей блоков дорог (десятки тысяч). Он нужен только для
+    // расширенной панели F3 и обновляется раз в 2 секунды.
+    metrics.sprites_refresh_secs -= time.delta_secs();
+    if metrics.extended && metrics.sprites_refresh_secs <= 0.0 {
+        metrics.sprites_refresh_secs = 2.0;
+        metrics.block_sprites = render
+            .active
+            .values()
+            .filter_map(|block| terrain_blocks.get(block.entity).ok())
+            .map(|children| children.len() as u32)
+            .sum();
+    }
 }
 
 /// Удаляет строящуюся сцену нового LOD (отмена перехода или перезапуск).
@@ -440,6 +536,7 @@ fn rebuild_dirty_blocks(
     render: &mut TerrainRender,
     metrics: &mut RenderMetrics,
     lens_tints: &HashMap<ChunkPos, [f32; 4]>,
+    scratch: &mut BlockMeshScratch,
 ) {
     let mut blocks: HashSet<BlockPos> = HashSet::with_capacity(dirty.len());
     for tile in dirty {
@@ -465,12 +562,23 @@ fn rebuild_dirty_blocks(
         .filter(|pos| blocks.contains(pos))
         .collect();
     for pos in stale {
+        // Fallback-блок — дешёвый placeholder: его заменит incoming-сцена
+        // или бюджетная достройка. Полная сборка здесь вернула бы декор
+        // старого LOD посреди отдаления (именно это и давало десятки тысяч
+        // спрайтов при массовых правках рельефа).
+        let Some(current) = render.active.get(&pos) else {
+            continue;
+        };
+        let (fallback, lod) = (current.fallback, current.lod);
+        if fallback {
+            continue;
+        }
         if let Some(block) = render.active.remove(&pos) {
             despawn_block(commands, meshes, block);
             let built = build_block(
                 commands, meshes, materials, sprite_assets, world, material,
-                camera_rotation, atlases, font, metrics, pos, render.lod,
-                lens_tints,
+                camera_rotation, atlases, font, metrics, pos, lod,
+                lens_tints, scratch,
             );
             render.active.insert(pos, built);
             metrics.rebuilds += 1;
@@ -492,7 +600,7 @@ fn rebuild_dirty_blocks(
                     build_block(
                         commands, meshes, materials, sprite_assets, world,
                         material, camera_rotation, atlases, font, metrics, pos, lod,
-                        lens_tints,
+                        lens_tints, scratch,
                     );
                 commands.entity(built.entity).insert(Visibility::Hidden);
                 incoming.blocks.insert(pos, built);
@@ -505,7 +613,8 @@ fn rebuild_dirty_blocks(
 /// Обновляет декор (объекты и предметы) блоков с изменёнными тайлами, не
 /// трогая terrain-меш: изменение объекта/предмета не меняет геометрию.
 /// Дети блока снимаются целиком и спавнятся заново — тот же путь, что при
-/// постройке блока. Декор рисуется только на LOD ≤ 1: на дальних блоках и
+/// постройке блока. Декор рисуется только на LOD ≤ `DECOR_MAX_LOD`: на
+/// дальних блоках и
 /// в fallback-блоках обновлять нечего.
 fn refresh_decor(
     commands: &mut Commands,
@@ -555,7 +664,7 @@ fn refresh_block_decor(
     font: &Res<UiFont>,
     block: BlockPos,
 ) {
-    if built.fallback || built.lod > 1 {
+    if built.fallback || !decor_visible_at(built.lod) {
         return;
     }
     let Ok(mut entity) = commands.get_entity(built.entity) else {
@@ -563,14 +672,9 @@ fn refresh_block_decor(
     };
     entity.despawn_related::<Children>();
     let origin = block_origin(block);
-    spawn_objects(
+    spawn_block_decor(
         &mut entity, meshes, materials, sprite_assets, world, block, origin, camera_rotation, atlases,
-    );
-    spawn_crops(
-        &mut entity, meshes, materials, sprite_assets, world, block, origin, atlases,
-    );
-    spawn_items(
-        &mut entity, meshes, materials, sprite_assets, world, block, origin, camera_rotation, atlases, &font.0,
+        &font.0,
     );
 }
 
@@ -597,9 +701,10 @@ fn build_block(
     block: BlockPos,
     lod: u32,
     lens_tints: &HashMap<ChunkPos, [f32; 4]>,
+    scratch: &mut BlockMeshScratch,
 ) -> BuiltBlock {
     let started = std::time::Instant::now();
-    let mesh = build_block_mesh(world, block, lod, atlases.tile_uv()).map(|mut mesh| {
+    let mesh = build_block_mesh_cached(world, block, lod, atlases.tile_uv(), scratch).map(|mut mesh| {
         if lod <= 4 && block_has_lens_tint(block, lens_tints) {
             set_block_lens_colors(&mut mesh, block, lens_tints);
         }
@@ -616,16 +721,12 @@ fn build_block(
     if let Some(handle) = mesh.clone() {
         entity.insert((Mesh3d(handle), MeshMaterial3d(material.clone())));
     }
-    // Объекты рисуются только на ближних LOD: дальше они мельче ячейки сетки.
-    if lod <= 1 {
-        spawn_objects(
-            &mut entity, meshes, materials, sprite_assets, world, block, origin, camera_rotation, atlases,
-        );
-        spawn_crops(
-            &mut entity, meshes, materials, sprite_assets, world, block, origin, atlases,
-        );
-        spawn_items(
-            &mut entity, meshes, materials, sprite_assets, world, block, origin, camera_rotation, atlases, &font.0,
+    // Объекты рисуются только вплотную к камере: дальше они мельче ячейки
+    // сетки, а их количество на большой карте растёт квадратично.
+    if decor_visible_at(lod) {
+        spawn_block_decor(
+            &mut entity, meshes, materials, sprite_assets, world, block, origin, camera_rotation,
+            atlases, &font.0,
         );
     }
     BuiltBlock {
@@ -884,12 +985,33 @@ pub(crate) fn lod_transition_for(
     }
 }
 
-/// Строит верх ячейки и грани перепада высоты, обращённые к фиксированной камере.
+/// Переиспользуемые буферы сборки меша блока: `counts` и `kinds` не
+/// зависят от конкретного блока и при массовой перестройке LOD не должны
+/// заново выделяться на каждый блок.
+#[derive(Default)]
+pub(crate) struct BlockMeshScratch {
+    counts: Vec<u32>,
+    kinds: Vec<Option<TileType>>,
+}
+
+/// Публичная обёртка без внешнего scratch — для тестов и разовых вызовов.
+#[allow(dead_code)]
 pub(crate) fn build_block_mesh(
     world: &World,
     block: BlockPos,
     lod: u32,
     tile_uv: &[[f32; 4]],
+) -> Option<Mesh> {
+    build_block_mesh_cached(world, block, lod, tile_uv, &mut BlockMeshScratch::default())
+}
+
+/// Строит меш блока с переиспользованием рабочих буферов.
+pub(crate) fn build_block_mesh_cached(
+    world: &World,
+    block: BlockPos,
+    lod: u32,
+    tile_uv: &[[f32; 4]],
+    scratch: &mut BlockMeshScratch,
 ) -> Option<Mesh> {
     let cells = (BLOCK_TILES >> lod) as usize;
     let cell_tiles = 1_i32 << lod;
@@ -899,20 +1021,27 @@ pub(crate) fn build_block_mesh(
     let tile_kinds = TileType::non_empty_count();
     // Один буфер счётчиков на весь блок: `cell_kind` очищает его на месте,
     // поэтому горячий путь не выделяет память на каждую ячейку.
-    let mut counts = vec![0_u32; tile_kinds];
-    let mut kinds = vec![None; cells * cells];
+    scratch.counts.clear();
+    scratch.counts.resize(tile_kinds, 0);
+    scratch.kinds.clear();
+    scratch.kinds.resize(cells * cells, None);
+    let counts = &mut scratch.counts;
+    let kinds = &mut scratch.kinds;
 
     for cy in 0..cells {
         for cx in 0..cells {
             let x0 = base_x + cx as i32 * cell_tiles;
             let y0 = base_y + cy as i32 * cell_tiles;
-            kinds[cy * cells + cx] =
-                cell_kind(world, x0, y0, cell_tiles, world_tiles, &mut counts);
+            kinds[cy * cells + cx] = cell_kind(world, x0, y0, cell_tiles, world_tiles, counts);
         }
     }
-    let mut positions = Vec::with_capacity(cells * cells * 20);
-    let mut uvs = Vec::with_capacity(cells * cells * 20);
-    let mut indices = Vec::with_capacity(cells * cells * 30);
+    // Ёмкость под верхние квады (по одному на ячейку). Стены добавляются
+    // по мере необходимости и при переполнении Vec растёт сам: резерв
+    // «по 5 квадов на ячейку» на LOD 0 выделял ~2 МБ на блок (81 920
+    // вершин) даже для ровного леса — заметный мусор для аллокатора.
+    let mut positions = Vec::with_capacity(cells * cells * 4);
+    let mut uvs = Vec::with_capacity(cells * cells * 4);
+    let mut indices = Vec::with_capacity(cells * cells * 6);
     let mut push_quad = |points: [[f32; 3]; 4], texture_uvs: [[f32; 2]; 4]| {
         let base = positions.len() as u32;
         positions.extend(points);
@@ -966,7 +1095,7 @@ pub(crate) fn build_block_mesh(
                         neighbor_y,
                         cell_tiles,
                         world_tiles,
-                        &mut counts,
+                        counts,
                     )
                 };
                 let neighbor_elevation = neighbor_kind.map(tile_elevation).unwrap_or(0.0);
@@ -1065,9 +1194,42 @@ fn cell_kind(
     world_tiles: i32,
     counts: &mut [u32],
 ) -> Option<TileType> {
-    if let Some(index) = uniform_cell_index(world, x0, y0, cell, world_tiles) {
-        return kind_for_atlas_index(index);
+    let chunk_side = CHUNK_SIZE as i32;
+    // Ячейка LOD 0–4 (1–16 тайлов) целиком лежит в одном чанке: берём
+    // `TerrainTiles` один раз и читаем тайлы напрямую, без `split_tile`
+    // и повторного поиска чанка на каждый тайл.
+    if cell <= chunk_side
+        && x0 >= 0
+        && y0 >= 0
+        && x0 + cell <= world_tiles
+        && y0 + cell <= world_tiles
+        && x0.rem_euclid(chunk_side) + cell <= chunk_side
+        && y0.rem_euclid(chunk_side) + cell <= chunk_side
+    {
+        let cpos = ChunkPos {
+            x: x0.div_euclid(chunk_side) as u32,
+            y: y0.div_euclid(chunk_side) as u32,
+        };
+        let local_x = x0.rem_euclid(chunk_side) as usize;
+        let local_y = y0.rem_euclid(chunk_side) as usize;
+        return match &world.chunk(cpos).terrain {
+            TerrainTiles::Uniform(kind) => tile_atlas_index(*kind).map(|_| *kind),
+            TerrainTiles::Full(tiles) => {
+                counts.fill(0);
+                for y in 0..cell as usize {
+                    let row = (local_y + y) * chunk_side as usize;
+                    for x in 0..cell as usize {
+                        let kind = tiles[row + local_x + x];
+                        if let Some(index) = tile_atlas_index(kind) {
+                            counts[index as usize] += 1;
+                        }
+                    }
+                }
+                dominant_atlas_index(counts).and_then(kind_for_atlas_index)
+            }
+        };
     }
+    // Крупная ячейка (LOD 5–6) пересекает чанки: общий путь с подсчётом.
     counts.fill(0);
     for y in y0..y0 + cell {
         for x in x0..x0 + cell {
@@ -1080,30 +1242,6 @@ fn cell_kind(
         }
     }
     dominant_atlas_index(counts).and_then(kind_for_atlas_index)
-}
-
-/// Если ячейка `[x0, x0+cell) × [y0, y0+cell)` целиком лежит внутри мира
-/// и внутри одного чанка с однородным рельефом, возвращает индекс атласа.
-/// Иначе None — ячейку считает общий путь с подсчётом тайлов.
-fn uniform_cell_index(world: &World, x0: i32, y0: i32, cell: i32, world_tiles: i32) -> Option<u8> {
-    if x0 < 0 || y0 < 0 || x0 + cell > world_tiles || y0 + cell > world_tiles {
-        return None;
-    }
-    let chunk_side = CHUNK_SIZE as i32;
-    if cell > chunk_side
-        || x0.rem_euclid(chunk_side) + cell > chunk_side
-        || y0.rem_euclid(chunk_side) + cell > chunk_side
-    {
-        return None;
-    }
-    let cpos = ChunkPos {
-        x: x0.div_euclid(chunk_side) as u32,
-        y: y0.div_euclid(chunk_side) as u32,
-    };
-    match &world.chunk(cpos).terrain {
-        TerrainTiles::Uniform(kind) => tile_atlas_index(*kind),
-        TerrainTiles::Full(_) => None,
-    }
 }
 
 /// Выбирает самый частый индекс тайла; при равенстве — меньший индекс.

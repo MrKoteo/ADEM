@@ -653,28 +653,28 @@ fn human_interact_mines_objects() {
     // Соседний тайл — в радиусе взаимодействия. Для добычи камня нужна палка в руке.
     let id = spawn_human(&mut world, WorldPos::of_tile_center(TilePos { x: 11, y: 11 }));
     mind_mut(&mut world, id).inventory.add(ItemKind::Stick, 1);
-    assert!(actions::interact(&mut world, id, pos));
+    assert!(actions::interact(&mut world, id, pos, 0));
     assert_eq!(mind(&world, id).inventory.count_of(ItemKind::Rock), 1);
     assert_eq!(world.object_at(pos).unwrap().charge, 1);
-    assert!(actions::interact(&mut world, id, pos));
+    assert!(actions::interact(&mut world, id, pos, 0));
     assert_eq!(mind(&world, id).inventory.count_of(ItemKind::Rock), 2);
     assert!(world.object_at(pos).is_none(), "пустой валун исчезает");
 
     // Куст ломается и даёт две палки.
     let bush_pos = TilePos { x: 12, y: 10 };
     world.set_object(bush_pos, Some(WorldObject::bush()));
-    assert!(actions::interact(&mut world, id, bush_pos));
+    assert!(actions::interact(&mut world, id, bush_pos, 0));
     assert_eq!(mind(&world, id).inventory.count_of(ItemKind::Stick), 3);
     assert!(world.object_at(bush_pos).is_none());
 
     // Дальний тайл — отказ, объект не тронут.
     let far = TilePos { x: 20, y: 10 };
     world.set_object(far, Some(WorldObject::bush()));
-    assert!(!actions::interact(&mut world, id, far));
+    assert!(!actions::interact(&mut world, id, far, 0));
     assert!(world.object_at(far).is_some());
 
     // Тайл без объекта — отказ.
-    assert!(!actions::interact(&mut world, id, TilePos { x: 11, y: 10 }));
+    assert!(!actions::interact(&mut world, id, TilePos { x: 11, y: 10 }, 0));
 }
 
 /// Полный инвентарь: добыча невозможна и не расходует объект — ресурс
@@ -695,7 +695,7 @@ fn human_interact_blocked_when_inventory_full() {
     mind_mut(&mut world, id).inventory = full;
     assert_eq!(MISC_SLOTS, mind(&world, id).inventory.items.len());
 
-    assert!(!actions::interact(&mut world, id, pos));
+    assert!(!actions::interact(&mut world, id, pos, 0));
     assert_eq!(world.object_at(pos).unwrap().charge, 2, "валун не тронут");
     assert_eq!(
         mind(&world, id).inventory.count_of(ItemKind::Rock),
@@ -906,10 +906,11 @@ fn apple_harvest_gives_one_fruit_per_action() {
     assert_eq!(mind(&world, actor).inventory.count_of(ItemKind::Apple), 7);
 }
 
-/// Сбор травы пустой рукой даёт ровно один пучок и превращает тайл в землю.
-/// Предмет в руке (кроме ножа) сбор блокирует.
+/// Сбор травы пустой рукой даёт ровно один пучок за действие; тайл
+/// превращается в землю лишь с шансом 10%, поэтому до земли выходит
+/// несколько сборов. Предмет в руке (кроме ножа) сбор блокирует.
 #[test]
-fn grass_gathering_yields_one_and_leaves_dirt() {
+fn grass_gathering_yields_one_per_action_and_converts_rarely() {
     use crate::simulation::items::ItemKind;
 
     let mut world = World::new(WorldSize::new(256), 42);
@@ -917,12 +918,25 @@ fn grass_gathering_yields_one_and_leaves_dirt() {
     world.set_terrain(pos, TileType::Grass);
     let actor = spawn_human(&mut world, WorldPos::of_tile_center(pos));
 
-    assert!(actions::interact(&mut world, actor, pos));
-    let collected = mind(&world, actor).inventory.count_of(ItemKind::GrassBunch);
-    assert_eq!(collected, 1, "за один тайл выдаётся ровно один пучок");
-    assert_eq!(world.terrain_kind(pos), TileType::Dirt);
+    let mut gathers = 0;
+    let mut tick = 0;
+    while world.terrain_kind(pos) != TileType::Dirt {
+        assert!(actions::interact(&mut world, actor, pos, tick));
+        gathers += 1;
+        tick += 1;
+        assert!(gathers < 1000, "шанс 10% обязан рано или поздно сработать");
+    }
+    assert_eq!(
+        mind(&world, actor).inventory.count_of(ItemKind::GrassBunch),
+        gathers,
+        "каждое действие даёт ровно один пучок"
+    );
     assert!(
-        !actions::interact(&mut world, actor, pos),
+        gathers > 1,
+        "земля с первого раза — вероятность 10% не работает"
+    );
+    assert!(
+        !actions::interact(&mut world, actor, pos, tick),
         "с земли трава не берётся"
     );
 
@@ -933,16 +947,85 @@ fn grass_gathering_yields_one_and_leaves_dirt() {
         kind: ItemKind::Stick,
         count: 1,
     });
-    assert!(!actions::interact(&mut world, actor, blocked));
+    assert!(!actions::interact(&mut world, actor, blocked, 0));
     assert_eq!(world.terrain_kind(blocked), TileType::ForestGrass);
 
-    // С ножом — можно.
+    // С ножом — можно (даже если тайл в этот раз остался травой).
     mind_mut(&mut world, actor).inventory.items[0] = Some(crate::simulation::ItemStack {
         kind: ItemKind::KnifePrimal,
         count: 1,
     });
-    assert!(actions::interact(&mut world, actor, blocked));
-    assert_eq!(world.terrain_kind(blocked), TileType::Dirt);
+    assert!(actions::interact(&mut world, actor, blocked, 1));
+}
+
+/// Средняя добыча с одного травяного тайла ≈ 10 пучков (шанс земли 10%):
+/// геометрическое распределение считается детерминированным броском.
+#[test]
+fn grass_tile_average_is_about_ten_bunches() {
+    use crate::simulation::items::Inventory;
+
+    let mut world = World::new(WorldSize::new(256), 7);
+    let actor = spawn_human(&mut world, WorldPos::of_tile_center(TilePos { x: 20, y: 20 }));
+
+    let mut total = 0_u32;
+    let mut tiles = 0_u32;
+    for y in 20..24 {
+        for x in 20..30 {
+            let pos = TilePos { x, y };
+            world.set_terrain(pos, TileType::Grass);
+            world.entities.get_mut(actor).unwrap().pos = WorldPos::of_tile_center(pos);
+            // Инвентарь не должен переполниться и исказить замер.
+            mind_mut(&mut world, actor).inventory = Inventory::default();
+            let mut tick = 0;
+            loop {
+                assert!(actions::interact(&mut world, actor, pos, tick));
+                total += 1;
+                tick += 1;
+                if world.terrain_kind(pos) == TileType::Dirt {
+                    break;
+                }
+                assert!(tick < 1000);
+            }
+            tiles += 1;
+        }
+    }
+    let average = total as f32 / tiles as f32;
+    assert!(
+        (5.0..20.0).contains(&average),
+        "среднее {average} пучков на тайл далеко от 10"
+    );
+}
+
+/// Захваченный кролик ест траву действием ЛКМ: сытость растёт на 15,
+/// рельеф не меняется, кулдаун общий с автономным выпасом.
+#[test]
+fn rabbit_player_grazes_grass_with_cooldown() {
+    use crate::simulation::hunger::Hunger;
+
+    let mut world = World::new(WorldSize::new(256), 1);
+    let pos = TilePos { x: 20, y: 20 };
+    world.set_terrain(pos, TileType::Grass);
+    let rabbit = world
+        .entities
+        .spawn(EntityKind::Rabbit, WorldPos::of_tile_center(pos));
+    world.entities.get_mut(rabbit).unwrap().hunger = Hunger::with_value(50.0);
+
+    assert!(actions::graze(&mut world, rabbit, pos, 10));
+    let hunger = world.entities.get(rabbit).unwrap().hunger.value();
+    assert!((64.9..65.1).contains(&hunger), "после выпаса ~65, а не {hunger}");
+    assert_eq!(world.entities.get(rabbit).unwrap().next_graze_tick, 60);
+    assert_eq!(world.terrain_kind(pos), TileType::Grass, "трава не съедается");
+
+    assert!(!actions::graze(&mut world, rabbit, pos, 59), "кулдаун");
+    assert!(actions::graze(&mut world, rabbit, pos, 60), "кулдаун вышел");
+
+    // Не трава и не кролик — отказ.
+    let dirt = TilePos { x: 21, y: 20 };
+    world.set_terrain(dirt, TileType::Dirt);
+    assert!(!actions::graze(&mut world, rabbit, dirt, 200));
+    let human = spawn_human(&mut world, WorldPos::of_tile_center(pos));
+    world.set_terrain(pos, TileType::Grass);
+    assert!(!actions::graze(&mut world, human, pos, 200));
 }
 
 /// Мотыга в руке пашет траву в пашню; с редким шансом из земли выпадает
@@ -960,10 +1043,10 @@ fn hoe_plows_grass_into_farmland() {
         count: 1,
     });
 
-    assert!(actions::interact(&mut world, actor, pos));
+    assert!(actions::interact(&mut world, actor, pos, 0));
     assert_eq!(world.terrain_kind(pos), TileType::Farmland, "мотыга пашет траву");
     // Пашня повторно не пашется (не трава) — но и не ломается.
-    assert!(!actions::interact(&mut world, actor, pos));
+    assert!(!actions::interact(&mut world, actor, pos, 0));
     assert_eq!(world.terrain_kind(pos), TileType::Farmland);
 }
 

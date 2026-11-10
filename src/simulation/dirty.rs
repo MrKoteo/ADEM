@@ -7,12 +7,18 @@
 //! не трогая меш. Обычные данные без Bevy — канал наполняет симуляция,
 //! расходует рендер.
 
+use std::collections::HashSet;
+
 use super::world::TilePos;
 
 /// Изменённые тайлы с прошлого кадра, по каналам причин изменения.
 /// Наполняется применением команд и задачами растительности, изымается
 /// рендером. Один тайл может попасть в оба канала — рендер обработает
 /// оба (rebuild блока покрывает и декор).
+///
+/// Дубли внутри канала отсекаются множествами: растительность и команды
+/// могут пометить один тайл несколько раз за кадр, а пересборка блока
+/// из-за этого не должна повторяться.
 #[derive(Default)]
 pub struct DirtyTiles {
     /// Изменился рельеф (`set_terrain`): меш блока нужно пересобрать.
@@ -20,16 +26,24 @@ pub struct DirtyTiles {
     /// Изменился объект или предмет на земле (`set_object`/`set_item`):
     /// достаточно обновить дочерние спрайты блока.
     pub decor: Vec<TilePos>,
+    /// Быстрый фильтр дублей канала рельефа (в `Vec` не попадает).
+    terrain_seen: HashSet<TilePos>,
+    /// Быстрый фильтр дублей канала декора.
+    decor_seen: HashSet<TilePos>,
 }
 
 impl DirtyTiles {
-    /// Отмечает тайл изменённым рельефом.
+    /// Отмечает тайл изменённым рельефом (повторный вызов за кадр — no-op).
     pub fn terrain(&mut self, pos: TilePos) {
-        self.terrain.push(pos);
+        if self.terrain_seen.insert(pos) {
+            self.terrain.push(pos);
+        }
     }
-    /// Отмечает тайл изменённым объектом/предметом.
+    /// Отмечает тайл изменённым объектом/предметом (повтор — no-op).
     pub fn decor(&mut self, pos: TilePos) {
-        self.decor.push(pos);
+        if self.decor_seen.insert(pos) {
+            self.decor.push(pos);
+        }
     }
     /// Есть ли изменения любого канала. Пока читается только тестами.
     #[allow(dead_code)]
@@ -40,5 +54,7 @@ impl DirtyTiles {
     pub fn clear(&mut self) {
         self.terrain.clear();
         self.decor.clear();
+        self.terrain_seen.clear();
+        self.decor_seen.clear();
     }
 }
