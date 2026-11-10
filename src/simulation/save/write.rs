@@ -179,6 +179,10 @@ fn write_entities(w: &mut Vec<u8>, store: &EntityStore) {
     for entity in &store.entities {
         write_u64(w, entity.id);
         w.push(entity.kind as u8);
+        // v5: пол, возраст, индивидуальная продолжительность жизни.
+        w.push(entity.gender as u8);
+        write_u64(w, entity.age_ticks);
+        write_u64(w, entity.lifetime_ticks);
         write_f32(w, entity.pos.x);
         write_f32(w, entity.pos.y);
         write_f32(w, entity.prev_pos.x);

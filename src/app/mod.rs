@@ -2,6 +2,7 @@
 
 pub mod audio;
 pub mod camera;
+pub mod generation;
 pub mod input;
 pub mod plugin;
 pub mod saves;

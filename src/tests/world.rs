@@ -78,3 +78,26 @@ fn dirty_tiles_deduplicate_within_channel() {
     dirty.clear();
     assert!(dirty.is_empty());
 }
+
+/// Порционный забор dirty-рельефа (разрежение пересборок на дальних LOD):
+/// остаток остаётся в очереди, повторный забор не теряет тайлы и дедупликация
+/// продолжает работать.
+#[test]
+fn dirty_tiles_batch_keeps_remainder() {
+    use crate::simulation::dirty::DirtyTiles;
+    use crate::simulation::world::TilePos;
+
+    let mut dirty = DirtyTiles::default();
+    for x in 0..5 {
+        dirty.terrain(TilePos { x, y: 0 });
+    }
+    let first = dirty.take_terrain_batch(2);
+    assert_eq!(first.len(), 2);
+    assert_eq!(dirty.terrain.len(), 3);
+    // Тайл, уже отданный рендеру, можно пометить заново.
+    dirty.terrain(first[0]);
+    assert_eq!(dirty.terrain.len(), 4);
+    let rest = dirty.take_terrain_batch(usize::MAX);
+    assert_eq!(rest.len(), 4);
+    assert!(dirty.terrain.is_empty());
+}

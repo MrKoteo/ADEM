@@ -618,7 +618,7 @@ pub(crate) fn slot_label(slot: u8, info: Option<&SaveHeader>) -> String {
                 "Слот {}: Год {}, {}, день {}, {:02}:{:02}",
                 slot,
                 clock.year() + 1,
-                clock.season().label(),
+                clock.month_name().label(),
                 clock.day_of_month() + 1,
                 clock.hour_of_day(),
                 clock.minute_of_hour()

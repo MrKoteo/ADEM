@@ -11,14 +11,12 @@
 //! состояние/цель существа. Решения детерминированы: RNG события сеётся
 //! от (seed, id, тик) — `decision_rng`, состояние не сохраняется.
 
-use rand::rngs::StdRng;
-use rand::{RngExt, SeedableRng};
-
 use super::combat;
 use super::entities::{EntityKind, EntityState, HumanGoal};
 use super::hunger::EAT_COOLDOWN_TICKS;
 use super::items::MISC_SLOTS;
 use super::objects::ObjectKind;
+use super::rng::{SplitMix64, mix_seed};
 use super::time::{self, TICKS_PER_SEC};
 use super::world::{World, WorldPos};
 
@@ -70,18 +68,21 @@ impl World {
     /// ИИ его не трогает.
     pub(crate) fn tick_human_ai(&mut self, controlled: Option<u64>, tick: u64) {
         // Снимок id автономных людей: мутации внутри цикла не ломают обход.
-        let ids: Vec<u64> = self
-            .entities
-            .iter()
-            .filter(|e| e.kind == EntityKind::Human && Some(e.id) != controlled)
-            .map(|e| e.id)
-            .collect();
+        // Буфер переиспользуется между тиками (тысячи людей каждый тик).
+        let mut ids = std::mem::take(&mut self.ai_scratch.human_ids);
+        ids.clear();
+        for entity in self.entities.iter() {
+            if entity.kind == EntityKind::Human && Some(entity.id) != controlled {
+                ids.push(entity.id);
+            }
+        }
         if ids.is_empty() {
+            self.ai_scratch.human_ids = ids;
             return;
         }
         let night = is_night(tick);
 
-        for id in ids {
+        for &id in &ids {
             // В воде ИИ молчит: работает паника/выход на сушу общего FSM.
             let swimming = self
                 .entities
@@ -92,6 +93,7 @@ impl World {
             }
             self.human_tick(id, tick, night);
         }
+        self.ai_scratch.human_ids = ids;
     }
 
     /// Один тик поведения человека: исполнение текущей цели, по
@@ -197,7 +199,7 @@ impl World {
     /// человек стоит или бродит (общее брожение ИИ).
     fn pick_day_activity(&mut self, id: u64, tick: u64) {
         let mut rng = wander_rng(self.seed, id, tick);
-        let roll = rng.random::<f32>();
+        let roll = rng.next_f32();
         // Запас еды впрок: та же цель-еда, что и при голоде, но по сытости
         // ещё далеко до порога поиска. Не находится еда — цель не ставится.
         if roll < 0.3 {
@@ -223,7 +225,7 @@ impl World {
         if roll < 0.7
             && let Some(entity) = self.entities.get_mut(id)
         {
-            entity.facing = if rng.random::<f32>() < 0.5 {
+            entity.facing = if rng.next_f32() < 0.5 {
                 super::entities::Facing::Left
             } else {
                 super::entities::Facing::Right
@@ -419,8 +421,8 @@ impl World {
         let mut rng = wander_rng(seed, id, tick);
         let side = self.size.tiles() as f32;
         for _ in 0..16 {
-            let angle = rng.random::<f32>() * std::f32::consts::TAU;
-            let radius = 8.0 * rng.random::<f32>().sqrt();
+            let angle = rng.next_f32() * std::f32::consts::TAU;
+            let radius = 8.0 * rng.next_f32().sqrt();
             let target = WorldPos {
                 x: (entity.pos.x + angle.cos() * radius).clamp(0.0, side),
                 y: (entity.pos.y + angle.sin() * radius).clamp(0.0, side),
@@ -649,17 +651,14 @@ fn path_water_crossings(world: &World, from: WorldPos, to: WorldPos) -> usize {
     crossings
 }
 
-/// RNG одного решения брожения: состояние не хранится.
-fn wander_rng(seed: u64, id: u64, tick: u64) -> StdRng {
-    let mut x = seed
+/// RNG одного решения брожения: splitmix64 (без ChaCha-инициализации),
+/// состояние не хранится.
+fn wander_rng(seed: u64, id: u64, tick: u64) -> SplitMix64 {
+    let x = seed
         ^ id.wrapping_mul(0x9E37_79B9_7F4A_7C15)
         ^ tick.wrapping_mul(0xBF58_476D_1CE4_E5B9)
         ^ 0x0D1E_5EED;
-    x ^= x >> 30;
-    x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    x ^= x >> 27;
-    x = x.wrapping_mul(0x94D0_49BB_1331_11EB);
-    StdRng::seed_from_u64(x ^ (x >> 31))
+    SplitMix64::new(mix_seed(x, 0x0A1D_0000_0000_0001))
 }
 
 impl World {

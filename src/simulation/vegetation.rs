@@ -18,6 +18,7 @@
 use super::chunk::CHUNK_TILES;
 use super::dirty::DirtyTiles;
 use super::objects::{ObjectKind, WorldObject};
+use super::rng::SplitMix64;
 use super::scheduler::{Scheduler, TaskKind};
 use super::tile::TileType;
 use super::world::{ChunkPos, TilePos, World, split_tile, tile_pos};
@@ -84,37 +85,6 @@ fn event_rng(seed: u64, tick: u64, tag: u8, chunk: ChunkPos, local: u8) -> Split
     SplitMix64::new(h)
 }
 
-/// Минимальный splitmix64: событиям растительности не нужен тяжёлый
-/// `StdRng` с инициализацией состояния на каждое событие. Бросок
-/// детерминирован, качество распределения для игровых процентов достаточное.
-struct SplitMix64 {
-    state: u64,
-}
-
-impl SplitMix64 {
-    fn new(seed: u64) -> Self {
-        Self { state: seed }
-    }
-
-    fn next_u64(&mut self) -> u64 {
-        self.state = self.state.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = self.state;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
-    }
-
-    /// Бросок [0, 1).
-    fn next_f32(&mut self) -> f32 {
-        (self.next_u64() >> 40) as f32 / (1u32 << 24) as f32
-    }
-
-    /// Равномерный индекс [0, len); детерминированный.
-    fn next_below(&mut self, len: usize) -> usize {
-        (self.next_u64() % len.max(1) as u64) as usize
-    }
-}
-
 /// Интервал до следующего события цепочки: геометрическое распределение
 /// с вероятностью `p` за такт (среднее 1/p тиков), минимум 1 тик.
 fn interval_ticks(rng: &mut SplitMix64, p: f32) -> u64 {
@@ -127,11 +97,28 @@ fn interval_ticks(rng: &mut SplitMix64, p: f32) -> u64 {
 /// раз после генерации (или пересоздания) мира. Сами функции планирования
 /// проверяют применимость правила, поэтому тайлы без соседей-целей цепочек
 /// не получают.
+#[allow(dead_code)] // синхронная обёртка для тестов; игра идёт через cancellable
 pub fn seed_all(world: &World, sched: &mut Scheduler, tick: u64) {
+    let _ = seed_all_cancellable(world, sched, tick, &|| false);
+}
+
+/// Как `seed_all`, но с проверкой отмены: посев на огромной карте — такой
+/// же долгий проход, как и генерация, поэтому его тоже можно прервать при
+/// смене параметров мира в UI. `false` — работа прервана, планировщик
+/// содержит частично засеянные цепочки и использовать его нельзя.
+pub fn seed_all_cancellable(
+    world: &World,
+    sched: &mut Scheduler,
+    tick: u64,
+    cancelled: &dyn Fn() -> bool,
+) -> bool {
     sched.clear_world_tasks();
     let seed = world.seed;
     let n = world.size.tiles() as i32;
     for y in 0..n {
+        if cancelled() {
+            return false;
+        }
         for x in 0..n {
             let pos = TilePos { x, y };
             schedule_grass_spread(world, sched, seed, tick, pos);
@@ -140,10 +127,14 @@ pub fn seed_all(world: &World, sched: &mut Scheduler, tick: u64) {
     }
     // Цепочки роста кустов — по чанкам: и кандидаты, и предел считаются на чанк.
     for cy in 0..world.chunks_per_side {
+        if cancelled() {
+            return false;
+        }
         for cx in 0..world.chunks_per_side {
             schedule_bush_growth(world, sched, seed, tick, ChunkPos { x: cx, y: cy });
         }
     }
+    true
 }
 
 /// После изменения тайла (редактор, игрок) перезапускает цепочки, которые

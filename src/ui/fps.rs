@@ -8,6 +8,7 @@ use bevy::prelude::*;
 
 use crate::app::state::{ClockRes, GameState, SchedulerRes, TickTiming};
 use crate::rendering::RenderMetrics;
+use crate::simulation::moon;
 use crate::ui::{style, text_input_focused};
 use crate::ui::UiFont;
 
@@ -104,12 +105,15 @@ fn update_fps(
             .as_ref()
             .map(|world| format!("{:.1} °C", world.ambient_temperature_c))
             .unwrap_or_else(|| "--".to_string());
+        // Луна: фаза (16 фаз по 2 суток, смена в полдень).
+        let moon_phase = moon::phase_label(moon::phase(clock.tick));
         // Календарные величины отображаются с единицы: в симуляции они с нуля.
+        // Месяц показывается названием (12 месяцев, год начинается с марта).
         let mut panel = format!(
-            "FPS: {:.1}\nГод {}, {}, день {}, {:02}:{:02}\nТемпература: {temperature}",
+            "FPS: {:.1}\nГод {}, {}, день {}, {:02}:{:02}\nТемпература: {temperature}\nФаза луны: {moon_phase}",
             fps.current_fps,
             clock.year() + 1,
-            clock.season().label(),
+            clock.month_name().label(),
             clock.day_of_month() + 1,
             clock.hour_of_day(),
             clock.minute_of_hour(),

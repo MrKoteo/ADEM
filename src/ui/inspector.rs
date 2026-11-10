@@ -188,7 +188,11 @@ fn spawn_inspector_window(commands: &mut Commands, entity: &SimEntity, font: &Ui
                 justify_content: JustifyContent::Center,
                 ..default()
             },
+            // Полноэкранный слой нужен только для центрирования: сам он не
+            // перехватывает пикинг, иначе перекрывал бы нижнюю панель
+            // редактора. Панель окна и слоты кликаются как обычно.
             InspectorRoot,
+            Pickable::IGNORE,
         ))
         .with_children(|overlay| {
             overlay
@@ -215,6 +219,21 @@ fn spawn_inspector_window(commands: &mut Commands, entity: &SimEntity, font: &Ui
                         },
                         TextColor(style::text()),
                     ));
+                    // Пол и возраст: случайные при спавне параметры особи.
+                    panel.spawn((
+                        Text::new(format!(
+                            "пол: {}, возраст: {} / {} лет",
+                            entity.gender.label(),
+                            entity.age_years(),
+                            entity.lifespan_years(),
+                        )),
+                        TextFont {
+                            font: font.0.clone().into(),
+                            font_size: 13.0.into(),
+                            ..default()
+                        },
+                        TextColor(style::text_dim()),
+                    ));
                     // Полосы: HP всегда, голод — у всех (волк тоже голодает),
                     // броня — только у разумных.
                     spawn_bar(
@@ -234,12 +253,11 @@ fn spawn_inspector_window(commands: &mut Commands, entity: &SimEntity, font: &Ui
                     if entity.mind.is_some() {
                         // Инвентарь целиком: misc, броня, одежда, косметика,
                         // мусорка — правила слотов решает симуляция.
-                        let sections: [(SlotArea, &str, usize); 5] = [
+                        let sections: [(SlotArea, &str, usize); 4] = [
                             (SlotArea::Misc, "Предметы", MISC_SLOTS),
                             (SlotArea::Armor, "Броня", 4),
                             (SlotArea::Clothes, "Одежда", 4),
                             (SlotArea::Bauble, "Косметика", 4),
-                            (SlotArea::Trash, "Мусорка", 1),
                         ];
                         for (area, label, count) in sections {
                             panel

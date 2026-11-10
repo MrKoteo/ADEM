@@ -8,10 +8,8 @@ use bevy::prelude::*;
 use bevy::text::{EditableText, EditableTextFilter, TextCursorStyle, TextEdit, TextLayout};
 use bevy::ui_widgets::TextInput;
 
-use crate::app::state::{ClockRes, GameState, SchedulerRes};
-use crate::simulation::generation::generate_world;
-use crate::simulation::scheduler::Scheduler;
-use crate::simulation::vegetation;
+use crate::app::generation::{WorldGeneration, request_world};
+use crate::app::state::{ClockRes, GameState};
 use crate::simulation::world::WorldSize;
 use crate::ui::UiFont;
 use crate::ui::style;
@@ -124,21 +122,26 @@ pub(crate) fn spawn_world_fields(
 /// Поле ввода размера мира: pending-текст живёт в виджете до применения.
 ///
 /// Enter — применить (значение зажимается в лимиты мира и округляется до
-/// кратности чанку, мир перегенерируется). Escape — отменить ввод и вернуть
-/// применённое значение. Без фокуса поле всегда показывает применённый размер.
+/// кратности чанку, мир перегенерируется в фоновом потоке). Escape — отменить
+/// ввод и вернуть применённое значение. Без фокуса поле всегда показывает
+/// применённый размер; во время генерации подпись добавляет «→ размер
+/// (генерация…)».
 pub(crate) fn handle_world_size_input(
     keys: Res<ButtonInput<KeyCode>>,
     mut state: ResMut<GameState>,
+    mut generation: ResMut<WorldGeneration>,
     clock: Res<ClockRes>,
-    mut sched: ResMut<SchedulerRes>,
     focus: Res<InputFocus>,
     mut inputs: Query<(Entity, &mut EditableText), With<WorldSizeInput>>,
     mut size_label: Query<&mut Text, With<WorldSizeLabel>>,
 ) {
-    // Подпись отражает применённый размер: во время набора видно,
-    // что pending в поле ещё не действует.
-    if state.is_changed() {
-        let want = format!("Мир: {}", state.world_size.label());
+    // Подпись отражает применённый размер; во время генерации добавляется
+    // индикатор, чтобы было видно, что запрос ещё строится в фоне.
+    if state.is_changed() || generation.is_changed() {
+        let mut want = format!("Мир: {}", state.world_size.label());
+        if let Some(request) = generation.requested {
+            want.push_str(&format!(" → {} (генерация…)", request.size.label()));
+        }
         for t in &mut size_label {
             crate::ui::set_text_if_neq(t, &want);
         }
@@ -156,11 +159,14 @@ pub(crate) fn handle_world_size_input(
         |text| text.parse::<u32>().ok(),
         |side| {
             let size = WorldSize::new(side);
-            if size != state.world_size {
-                regenerate_world(size, state.seed, &mut state, &clock, &mut sched.0);
-                state.world_size = size;
-            }
-            state.world_size.tiles().to_string()
+            // Запрос уходит в фоновый поток; повторный Enter с теми же
+            // параметрами не перезапускает карту, смена — отменяет уже
+            // идущую генерацию (ARCHITECTURE 4.1). Сид берётся из pending:
+            // если уже строится другой размер, ввод размера не должен
+            // откатывать его на применённый старый сид.
+            let seed = generation.pending_params(&state).seed;
+            request_world(&mut state, &mut generation, size, seed, clock.0.tick);
+            size.tiles().to_string()
         },
     );
 }
@@ -169,14 +175,17 @@ pub(crate) fn handle_world_size_input(
 pub(crate) fn handle_world_seed_input(
     keys: Res<ButtonInput<KeyCode>>,
     mut state: ResMut<GameState>,
+    mut generation: ResMut<WorldGeneration>,
     clock: Res<ClockRes>,
-    mut sched: ResMut<SchedulerRes>,
     focus: Res<InputFocus>,
     mut inputs: Query<(Entity, &mut EditableText), With<WorldSeedInput>>,
     mut seed_label: Query<&mut Text, With<WorldSeedLabel>>,
 ) {
-    if state.is_changed() {
-        let want = format!("Сид: {}", state.seed);
+    if state.is_changed() || generation.is_changed() {
+        let mut want = format!("Сид: {}", state.seed);
+        if let Some(request) = generation.requested {
+            want.push_str(&format!(" → {}", request.seed));
+        }
         for t in &mut seed_label {
             crate::ui::set_text_if_neq(t, &want);
         }
@@ -193,17 +202,9 @@ pub(crate) fn handle_world_seed_input(
         state.seed,
         |text| text.parse::<u64>().ok(),
         |seed| {
-            if seed != state.seed {
-                regenerate_world(
-                    state.world_size,
-                    seed,
-                    &mut state,
-                    &clock,
-                    &mut sched.0,
-                );
-                state.seed = seed;
-            }
-            state.seed.to_string()
+            let size = generation.pending_params(&state).size;
+            request_world(&mut state, &mut generation, size, seed, clock.0.tick);
+            seed.to_string()
         },
     );
 }
@@ -244,24 +245,6 @@ fn handle_world_field<T>(
     } else if keys.just_pressed(KeyCode::Escape) {
         reset_editable(editable, &committed);
     }
-}
-
-/// Перегенерирует мир с новыми размером/сидом: генерация, посев цепочек
-/// растительности, запрос перерисовки. Захваченное существо теряется:
-/// мир заменён целиком, управлять не кем (можно захватить другое по F1).
-/// Общая часть обоих полей ввода.
-fn regenerate_world(
-    size: WorldSize,
-    seed: u64,
-    state: &mut GameState,
-    clock: &ClockRes,
-    sched: &mut Scheduler,
-) {
-    let world = generate_world(size, seed);
-    vegetation::seed_all(&world, sched, clock.0.tick);
-    state.world = Some(world);
-    state.pending_rerender = true;
-    state.set_controlled(None);
 }
 
 /// Сбрасывает текстовое поле на значение: pending-правки стираются,

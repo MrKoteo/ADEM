@@ -5,7 +5,7 @@
 //! `save/mod.rs`.
 
 use crate::simulation::chunk::{TerrainTiles, CHUNK_TILES};
-use crate::simulation::entities::{EntityKind, EntityState, EntityStore, Facing, HumanMind, SimEntity};
+use crate::simulation::entities::{EntityKind, EntityState, EntityStore, Facing, Gender, HumanMind, SimEntity};
 use crate::simulation::items::{
     Inventory, ItemKind, ItemStack, SlotArea, ARMOR_SLOTS, BAUBLE_SLOTS, CLOTHES_SLOTS, MISC_SLOTS,
 };
@@ -188,6 +188,9 @@ pub fn load_game(bytes: &[u8]) -> Result<SavedGame, SaveError> {
             // Прогресс ломания — транзиент: после загрузки зажатие начинать заново.
             building_breaks: std::collections::HashMap::new(),
             fauna_scratch: Default::default(),
+            entity_scratch: Default::default(),
+            ai_scratch: Default::default(),
+            land_scratch: Default::default(),
             item_scratch: Default::default(),
         },
         scheduler,
@@ -271,7 +274,7 @@ fn read_entities(r: &mut Reader<'_>) -> Result<EntityStore, SaveError> {
         previous_id = entity.id;
         entities.push(entity);
     }
-    Ok(EntityStore { entities, next_id })
+    Ok(EntityStore::from_entities(entities, next_id))
 }
 
 /// Читает одно существо; порядок полей совпадает с `write_entities`.
@@ -279,6 +282,14 @@ fn read_entity(r: &mut Reader<'_>) -> Result<SimEntity, SaveError> {
     let id = r.read_u64()?;
     let kind = EntityKind::from_discriminant(r.read_u8()?)
         .ok_or(SaveError::BadData("вид существа"))?;
+    // Пол, возраст и продолжительность жизни (v5).
+    let gender = Gender::from_discriminant(r.read_u8()?)
+        .ok_or(SaveError::BadData("пол существа"))?;
+    let age_ticks = r.read_u64()?;
+    let lifetime_ticks = r.read_u64()?;
+    if lifetime_ticks == 0 || age_ticks > lifetime_ticks {
+        return Err(SaveError::BadData("возраст существа"));
+    }
     let x = r.read_f32()?;
     let y = r.read_f32()?;
     let prev_x = r.read_f32()?;
@@ -317,6 +328,9 @@ fn read_entity(r: &mut Reader<'_>) -> Result<SimEntity, SaveError> {
     Ok(SimEntity {
         id,
         kind,
+        gender,
+        age_ticks,
+        lifetime_ticks,
         pos: WorldPos { x, y },
         prev_pos: WorldPos { x: prev_x, y: prev_y },
         facing,

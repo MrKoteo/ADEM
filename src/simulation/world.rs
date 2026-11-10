@@ -6,7 +6,7 @@ use super::chunk::{Chunk, ResourceDeposit, TerrainTiles, CHUNK_SIZE};
 use super::combat::{Projectile, StuckSpear};
 use super::containers::Container;
 use super::crops::Crop;
-use super::entities::{EntityStore, FaunaScratch};
+use super::entities::{EntityStore, FaunaScratch, LandSearchScratch};
 use super::item_entity::{ItemEntities, ItemEntity, ItemScratch};
 use super::items::ItemStack;
 use super::objects::WorldObject;
@@ -24,9 +24,9 @@ pub struct WorldSize {
 }
 
 impl WorldSize {
-    /// Минимальная сторона мира (GAME_DESIGN.md, раздел 3.2).
-    pub const MIN: u32 = 256;
-    /// Максимальная сторона мира (GAME_DESIGN.md, раздел 3.2).
+    /// Минимальная сторона мира.
+    pub const MIN: u32 = 128;
+    /// Максимальная сторона мира.
     pub const MAX: u32 = 16384;
 
     /// Создаёт размер мира из произвольного числа: зажимает в [MIN, MAX]
@@ -118,6 +118,12 @@ pub struct World {
     /// Переиспользуемые буферы поведения фауны (снимки, пространственные
     /// сетки): не сохраняются и не влияют на детерминизм.
     pub(crate) fauna_scratch: FaunaScratch,
+    /// Переиспользуемые буферы тика существ (список умерших).
+    pub(crate) entity_scratch: EntityScratch,
+    /// Переиспользуемые буферы ИИ людей (списки id/позиций на тик).
+    pub(crate) ai_scratch: AiScratch,
+    /// Переиспользуемые буферы BFS поиска суши.
+    pub(crate) land_scratch: LandSearchScratch,
     /// Переиспользуемые буферы поиска едоков у дропа.
     pub(crate) item_scratch: ItemScratch,
 }
@@ -129,6 +135,25 @@ pub struct BuildingBreak {
     pub progress: u16,
     /// Тик последнего удара: большой зазор сбрасывает прогресс.
     pub last_tick: u64,
+}
+
+/// Переиспользуемые буферы тика существ: список умерших от голода
+/// (иначе `Vec` выделялся бы каждый тик при тысячах существ).
+#[derive(Default)]
+pub(crate) struct EntityScratch {
+    /// id существ, у которых HP упало до нуля: смерть исполняется после
+    /// обхода FSM, когда мир можно занять целиком.
+    pub(crate) dead: Vec<u64>,
+}
+
+/// Переиспользуемые буферы ИИ людей: списки id на тик и снимки позиций
+/// для провокаций волков. Раньше каждый тик выделялись новые `Vec`.
+#[derive(Default)]
+pub(crate) struct AiScratch {
+    pub(crate) human_ids: Vec<u64>,
+    pub(crate) positions: Vec<(u64, WorldPos)>,
+    pub(crate) provoked: Vec<u64>,
+    pub(crate) killed: Vec<u64>,
 }
 
 impl World {
@@ -188,6 +213,9 @@ impl World {
             item_entities: ItemEntities::default(),
             building_breaks: HashMap::new(),
             fauna_scratch: FaunaScratch::default(),
+            entity_scratch: EntityScratch::default(),
+            ai_scratch: AiScratch::default(),
+            land_scratch: LandSearchScratch::default(),
             item_scratch: ItemScratch::default(),
         }
     }
@@ -237,6 +265,7 @@ impl World {
 
     /// Меняет ресурс тайла; `None` или нулевое количество убирает запись —
     /// слой разреженный, пустые тайлы в нём не хранятся.
+    #[allow(dead_code)] // генерация пишет слой чанка напрямую; API нужен тестам
     pub fn set_resource(&mut self, pos: TilePos, kind: ResourceKind, amount: u16) {
         let (cpos, idx) = split_tile_pos(pos);
         let chunk = self.chunk_mut(cpos);
@@ -348,7 +377,24 @@ impl World {
 }
 
 /// Раскладывает мировую позицию тайла на (позиция чанка, линейный индекс в чанке).
+/// CHUNK_SIZE — степень двойки (16), поэтому для неотрицательных координат
+/// (горячий путь: рендер, ИИ, декор) хватает сдвигов и маски; `div_euclid`
+/// остаётся только для отрицательных (луч пикинга за границей мира).
 fn split_tile_pos(pos: TilePos) -> (ChunkPos, u8) {
+    if pos.x >= 0 && pos.y >= 0 {
+        let x = pos.x as u32;
+        let y = pos.y as u32;
+        let mask = CHUNK_SIZE as u32 - 1;
+        let local = ((y & mask) * CHUNK_SIZE as u32 + (x & mask)) as u8;
+        let shift = CHUNK_SIZE.trailing_zeros();
+        return (
+            ChunkPos {
+                x: x >> shift,
+                y: y >> shift,
+            },
+            local,
+        );
+    }
     let cx = pos.x.div_euclid(CHUNK_SIZE as i32) as u32;
     let cy = pos.y.div_euclid(CHUNK_SIZE as i32) as u32;
     let tx = pos.x.rem_euclid(CHUNK_SIZE as i32) as usize;

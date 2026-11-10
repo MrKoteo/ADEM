@@ -245,7 +245,7 @@ impl World {
             );
             // Урон и смерть.
             let died = {
-                let entity = self.entities.entities.iter_mut().find(|e| e.id == entity_id);
+                let entity = self.entities.get_mut(entity_id);
                 match entity {
                     Some(entity) => {
                         entity.hp = (entity.hp - damage).max(0.0);
@@ -503,7 +503,7 @@ fn provoke_wolf(entity: &mut super::entities::SimEntity, attacker: Option<u64>, 
 /// теряет весь инвентарь: каждый стек — отдельная дроп-сущность.
 /// Животные дробятся детерминированно от (seed, тик, id существа).
 pub(crate) fn drop_entity_loot(world: &mut World, entity_id: u64, tick: u64) {
-    let Some(entity) = world.entities.entities.iter().find(|e| e.id == entity_id) else {
+    let Some(entity) = world.entities.get(entity_id) else {
         return;
     };
     let (pos, seed) = (entity.pos, world.seed);

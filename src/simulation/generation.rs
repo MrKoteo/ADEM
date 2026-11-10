@@ -23,6 +23,7 @@ use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng}; // Bevy 0.20 / rand 0.10: RngExt вместо Rng
 
 use super::entities::EntityKind;
+use super::chunk::{ResourceDeposit, TerrainTiles, CHUNK_SIZE, CHUNK_TILES};
 use super::objects::WorldObject;
 use super::world::WorldPos;
 use super::tile::{ResourceKind, TileType};
@@ -216,104 +217,161 @@ fn terrain_kind_for(elevation: f32, ridge: f32, moisture: f32) -> TileType {
 }
 
 /// Сгенерировать мир: тайлы + водоёмы + реки + ресурсы + объекты.
+#[allow(dead_code)] // синхронный вариант для тестов; игра идёт через cancellable
 pub fn generate_world(size: WorldSize, seed: u64) -> World {
+    generate_world_cancellable(size, seed, &|| false)
+        .expect("generation without cancellation always completes")
+}
+
+/// Генерация мира с проверкой отмены на каждом проходе. `cancelled`
+/// вызывается достаточно часто (раз в строку/чанк/несколько тысяч шагов
+/// BFS), чтобы смена размера/сида в UI прерывала уже идущую генерацию
+/// большой карты, а не ждала её конца.
+///
+/// Возвращает `None`, если генерация прервана: частичный мир использовать
+/// нельзя. Проверки стоят на внешних циклах — на маленьком мире их цена
+/// пренебрежимо мала, а на 4096²+ картах именно они дают отзывчивость UI.
+pub fn generate_world_cancellable(
+    size: WorldSize,
+    seed: u64,
+    cancelled: &dyn Fn() -> bool,
+) -> Option<World> {
     let mut world = World::new(size, seed);
     let mut rng = StdRng::seed_from_u64(seed);
     let n = size.tiles() as i32;
+    let chunks_per_side = world.chunks_per_side as usize;
 
-    // Проход 1: рельеф и ресурсы в тайлах.
-    for y in 0..n {
-        for x in 0..n {
-            let elevation = elevation_at(x, y, n, seed);
-            let ridge = ridge_at(x, y, seed);
-            let moisture = moisture_at(x, y, seed);
-            let kind = terrain_kind_for(elevation, ridge, moisture);
-            let pos = TilePos { x, y };
-            world.set_terrain(pos, kind);
-
-            match kind {
-                TileType::Stone if rng.random::<f32>() < 0.10 => {
-                    world.set_resource(
-                        pos,
-                        ResourceKind::Copper,
-                        20 + rng.random_range(0..80),
-                    );
+    // Проход 1: рельеф и ресурсы. Пишем сразу в массивы чанков: `set_terrain`
+    // на каждый тайл делал div/mod и поиск чанка, что на 4096²+ картах
+    // заметно дороже самих шумов.
+    for cy in 0..chunks_per_side {
+        if cancelled() {
+            return None;
+        }
+        for cx in 0..chunks_per_side {
+            let chunk_index = cy * chunks_per_side + cx;
+            let mut tiles = [TileType::Empty; CHUNK_TILES];
+            let chunk = &mut world.chunks[chunk_index];
+            for ly in 0..CHUNK_SIZE {
+                let y = (cy * CHUNK_SIZE + ly) as i32;
+                for lx in 0..CHUNK_SIZE {
+                    let x = (cx * CHUNK_SIZE + lx) as i32;
+                    let elevation = elevation_at(x, y, n, seed);
+                    let ridge = ridge_at(x, y, seed);
+                    let moisture = moisture_at(x, y, seed);
+                    let mut kind = terrain_kind_for(elevation, ridge, moisture);
+                    let idx = ly * CHUNK_SIZE + lx;
+                    match kind {
+                        TileType::Stone if rng.random::<f32>() < 0.10 => {
+                            chunk.resources.insert(
+                                idx as u8,
+                                ResourceDeposit {
+                                    kind: ResourceKind::Copper,
+                                    amount: 20 + rng.random_range(0..80),
+                                },
+                            );
+                        }
+                        TileType::Grass | TileType::Dirt if rng.random::<f32>() < 0.02 => {
+                            kind = TileType::Clay;
+                            chunk.resources.insert(
+                                idx as u8,
+                                ResourceDeposit {
+                                    kind: ResourceKind::Clay,
+                                    amount: 30 + rng.random_range(0..50),
+                                },
+                            );
+                        }
+                        TileType::ForestGrass if moss_at(x, y, seed) > MOSS_THRESHOLD => {
+                            // Мох пятнами в лесу: тайл остаётся на уровне лесной травы.
+                            kind = TileType::Moss;
+                        }
+                        _ => {}
+                    }
+                    tiles[idx] = kind;
                 }
-                TileType::Grass | TileType::Dirt if rng.random::<f32>() < 0.02 => {
-                    world.set_terrain(pos, TileType::Clay);
-                    world.set_resource(pos, ResourceKind::Clay, 30 + rng.random_range(0..50));
-                }
-                TileType::ForestGrass
-                    if moss_at(x, y, seed) > MOSS_THRESHOLD =>
-                {
-                    // Мох пятнами в лесу: тайл остаётся на уровне лесной травы.
-                    world.set_terrain(pos, TileType::Moss);
-                }
-                _ => {}
             }
+            chunk.terrain = TerrainTiles::Full(Box::new(tiles));
         }
     }
 
     // Вода у края карты — море; внутренние водоёмы — озёра с пониженной
     // глубиной, чтобы их можно было отличить на взгляд.
-    classify_water(&mut world);
+    if !classify_water(&mut world, cancelled) {
+        return None;
+    }
 
     // Реки: от возвышенностей вниз по склону, впадают в озёра и моря.
-    carve_rivers(&mut world);
+    if !carve_rivers(&mut world, cancelled) {
+        return None;
+    }
 
     // Проход 2: объекты поверх тайлов. Отдельный проход, чтобы не смешивать
     // RNG-последовательность тайлов с объектами (каждый проход детерминирован).
-    for y in 0..n {
-        for x in 0..n {
-            let pos = TilePos { x, y };
-            match world.terrain_kind(pos) {
-                // Мох — лесная подстилка: растительность та же, что на лесной траве.
-                TileType::ForestGrass | TileType::Moss => {
-                    let r = rng.random::<f32>();
-                    if r < 0.18 {
-                        world.set_object(pos, Some(WorldObject::tree()));
-                    } else if r < 0.22 {
-                        // Плодов на дереве — 4–10 (GAME_DESIGN, приложение A).
-                        world.set_object(
-                            pos,
-                            Some(WorldObject::apple_tree_with_fruit(rng.random_range(4..=10))),
-                        );
-                    } else if r < 0.25 {
-                        world.set_object(pos, Some(WorldObject::bush()));
-                    } else if r < 0.253 {
-                        // Валуны в лесу редки (GAME_DESIGN, приложение A).
-                        world.set_object(pos, Some(WorldObject::rock(5 + rng.random_range(0..10))));
+    // Чанки уже заполнены: читаем рельеф из их массива без `terrain_kind`.
+    for cy in 0..chunks_per_side {
+        if cancelled() {
+            return None;
+        }
+        for cx in 0..chunks_per_side {
+            let chunk = &mut world.chunks[cy * chunks_per_side + cx];
+            for ly in 0..CHUNK_SIZE {
+                for lx in 0..CHUNK_SIZE {
+                    let idx = ly * CHUNK_SIZE + lx;
+                    let object = match chunk.terrain.get(idx) {
+                        // Мох — лесная подстилка: растительность та же, что на лесной траве.
+                        TileType::ForestGrass | TileType::Moss => {
+                            let r = rng.random::<f32>();
+                            if r < 0.18 {
+                                Some(WorldObject::tree())
+                            } else if r < 0.22 {
+                                // Плодов на дереве — 4–10 (GAME_DESIGN, приложение A).
+                                Some(WorldObject::apple_tree_with_fruit(rng.random_range(4..=10)))
+                            } else if r < 0.25 {
+                                Some(WorldObject::bush())
+                            } else if r < 0.253 {
+                                // Валуны в лесу редки (GAME_DESIGN, приложение A).
+                                Some(WorldObject::rock(5 + rng.random_range(0..10)))
+                            } else {
+                                None
+                            }
+                        }
+                        TileType::Grass if rng.random::<f32>() < 0.03 => {
+                            Some(WorldObject::bush())
+                        }
+                        TileType::Stone if rng.random::<f32>() < 0.05 => {
+                            Some(WorldObject::rock(5 + rng.random_range(0..10)))
+                        }
+                        TileType::Mountain if rng.random::<f32>() < 0.03 => {
+                            Some(WorldObject::rock(5 + rng.random_range(0..10)))
+                        }
+                        _ => None,
+                    };
+                    if let Some(object) = object {
+                        chunk.objects.insert(idx as u8, object);
                     }
                 }
-                TileType::Grass => {
-                    if rng.random::<f32>() < 0.03 {
-                        world.set_object(pos, Some(WorldObject::bush()));
-                    }
-                }
-                TileType::Stone if rng.random::<f32>() < 0.05 => {
-                    world.set_object(pos, Some(WorldObject::rock(5 + rng.random_range(0..10))));
-                }
-                TileType::Mountain if rng.random::<f32>() < 0.03 => {
-                    world.set_object(pos, Some(WorldObject::rock(5 + rng.random_range(0..10))));
-                }
-                _ => {}
             }
         }
     }
 
     // Существа — после рельефа и объектов: им нужна готовая карта,
     // чтобы не появиться в воде.
-    spawn_wildlife(&mut world, &mut rng);
-    // Кролики — отдельным проходом: у них своя плотность и биом.
-    spawn_rabbits(&mut world, &mut rng);
+    if !spawn_wildlife(&mut world, &mut rng, cancelled)
+        || !spawn_rabbits(&mut world, &mut rng, cancelled)
+    {
+        return None;
+    }
 
     // Однородные чанки (океаны, пустыни) схлопываем в Uniform —
     // экономия ОЗУ сразу после генерации.
-    for chunk in world.chunks.iter_mut() {
+    for (index, chunk) in world.chunks.iter_mut().enumerate() {
+        if index % chunks_per_side == 0 && cancelled() {
+            return None;
+        }
         chunk.terrain.try_compress();
     }
 
-    world
+    Some(world)
 }
 
 /// Плотность заселения: одно существо на столько тайлов площади.
@@ -325,7 +383,7 @@ const MAX_ANIMALS: u32 = 64;
 
 /// Заселяет мир волками на суше. Мир маленький (256×256) — восемь особей;
 /// количество масштабируется от площади, но не больше `MAX_ANIMALS`.
-fn spawn_wildlife(world: &mut World, rng: &mut StdRng) {
+fn spawn_wildlife(world: &mut World, rng: &mut StdRng, cancelled: &dyn Fn() -> bool) -> bool {
     let tiles = world.size.tiles();
     let count = (tiles * tiles / TILES_PER_ANIMAL).clamp(1, MAX_ANIMALS);
     let side = tiles as i32;
@@ -333,6 +391,9 @@ fn spawn_wildlife(world: &mut World, rng: &mut StdRng) {
     let mut attempts = 0_u32;
 
     while placed < count && attempts < count * 100 {
+        if cancelled() {
+            return false;
+        }
         attempts += 1;
         let pos = TilePos {
             x: rng.random_range(0..side),
@@ -351,6 +412,7 @@ fn spawn_wildlife(world: &mut World, rng: &mut StdRng) {
             .spawn(EntityKind::Wolf, WorldPos::of_tile_center(pos));
         placed += 1;
     }
+    true
 }
 
 /// Плотность кроликов: одно существо на столько тайлов площади.
@@ -361,7 +423,7 @@ const MAX_RABBITS: u32 = 128;
 
 /// Заселяет мир кроликами на травяных биомах. Кролик — травоядное:
 /// появляется только там, где есть корм (обычная или лесная трава).
-fn spawn_rabbits(world: &mut World, rng: &mut StdRng) {
+fn spawn_rabbits(world: &mut World, rng: &mut StdRng, cancelled: &dyn Fn() -> bool) -> bool {
     let tiles = world.size.tiles();
     let count = (tiles * tiles / TILES_PER_RABBIT).clamp(1, MAX_RABBITS);
     let side = tiles as i32;
@@ -369,6 +431,9 @@ fn spawn_rabbits(world: &mut World, rng: &mut StdRng) {
     let mut attempts = 0_u32;
 
     while placed < count && attempts < count * 100 {
+        if cancelled() {
+            return false;
+        }
         attempts += 1;
         let pos = TilePos {
             x: rng.random_range(0..side),
@@ -385,6 +450,7 @@ fn spawn_rabbits(world: &mut World, rng: &mut StdRng) {
             .spawn(EntityKind::Rabbit, WorldPos::of_tile_center(pos));
         placed += 1;
     }
+    true
 }
 
 /// Битовая карта тайлов n×n для отметки обработанных позиций при обходе
@@ -433,13 +499,17 @@ impl BitGrid {
 /// — море: глубины остаются как сгенерированы. Остальная вода — озёра:
 /// «океаническая» глубина понижается до глубокой воды. Обходы детерминиро-
 /// ваны: BFS с очередью и фиксированным порядком соседей.
-fn classify_water(world: &mut World) {
+fn classify_water(world: &mut World, cancelled: &dyn Fn() -> bool) -> bool {
     let n = world.size.tiles() as i32;
     let mut grid = BitGrid::new(n as u32);
     let mut queue: VecDeque<usize> = VecDeque::new();
 
     // Истоки моря — водные тайлы периметра карты.
     for i in 0..n {
+        // Периметр — 4·n шагов; проверка раз в строку бесплатна.
+        if i % 256 == 0 && cancelled() {
+            return false;
+        }
         for pos in [
             TilePos { x: i, y: 0 },
             TilePos { x: i, y: n - 1 },
@@ -457,7 +527,12 @@ fn classify_water(world: &mut World) {
     }
 
     // BFS по воде от границы: всё достижимое — море.
+    let mut steps = 0_u32;
     while let Some(idx) = queue.pop_front() {
+        steps += 1;
+        if steps.is_multiple_of(16_384) && cancelled() {
+            return false;
+        }
         let (x, y) = grid.coords(idx);
         for (dx, dy) in NEIGHBORS_4 {
             let nx = x + dx;
@@ -482,6 +557,9 @@ fn classify_water(world: &mut World) {
     // тайл — уже море или разобранное озеро, повторный заход исключён.
     let tiles = n as usize * n as usize;
     for idx in 0..tiles {
+        if idx % 65_536 == 0 && cancelled() {
+            return false;
+        }
         if grid.get(idx) {
             continue;
         }
@@ -526,6 +604,7 @@ fn classify_water(world: &mut World) {
             }
         }
     }
+    true
 }
 
 /// Сколько попыток провести реки: пропорционально площади мира, с нижней
@@ -538,12 +617,15 @@ fn river_attempts(n: i32) -> u32 {
 /// Проводит реки. Истоки выбираются случайными точками на возвышенностях
 /// (отдельный RNG-поток от seed, чтобы проходы генерации не зависели друг
 /// от друга), русло идёт вниз по склону до воды.
-fn carve_rivers(world: &mut World) {
+fn carve_rivers(world: &mut World, cancelled: &dyn Fn() -> bool) -> bool {
     let n = world.size.tiles() as i32;
     let seed = world.seed;
     let mut rng = StdRng::seed_from_u64(seed ^ 0x51CE_5EED_5A1D);
     let mut visited: HashSet<u32> = HashSet::new();
     for _ in 0..river_attempts(n) {
+        if cancelled() {
+            return false;
+        }
         let pos = TilePos {
             x: rng.random_range(0..n),
             y: rng.random_range(0..n),
@@ -554,8 +636,11 @@ fn carve_rivers(world: &mut World) {
         if world.terrain_kind(pos).is_water() {
             continue;
         }
-        carve_river(world, pos, n, seed, &mut visited);
+        if !carve_river(world, pos, n, seed, &mut visited, cancelled) {
+            return false;
+        }
     }
+    true
 }
 
 /// Чем длиннее река, тем шире её русло у низовьев: 1–3 тайла. Пороги
@@ -585,14 +670,24 @@ fn river_width_at(i: usize, length: usize) -> u32 {
 /// мелководьем, ширина растёт от истока к устью. Любое завершение пути —
 /// водоём: существующая вода, край карты (океан у границы) или залитая
 /// котловина локального минимума. Обрывков посреди суши не остаётся.
-fn carve_river(world: &mut World, start: TilePos, n: i32, seed: u64, visited: &mut HashSet<u32>) {
+fn carve_river(
+    world: &mut World,
+    start: TilePos,
+    n: i32,
+    seed: u64,
+    visited: &mut HashSet<u32>,
+    cancelled: &dyn Fn() -> bool,
+) -> bool {
     // Предохранитель по длине: путь не может идти вечно.
     let max_steps = (n as usize / 2).clamp(256, 4096);
     let mut path: Vec<TilePos> = Vec::with_capacity(64);
     let mut pos = start;
     // Путь закончился в существующей воде (или у края-океана): озеро не нужно.
     let mut reached_water = false;
-    for _ in 0..max_steps {
+    for step in 0..max_steps {
+        if step % 64 == 0 && cancelled() {
+            return false;
+        }
         if world.terrain_kind(pos).is_water() {
             reached_water = true; // впала в существующую воду
             break;
@@ -627,8 +722,8 @@ fn carve_river(world: &mut World, start: TilePos, n: i32, seed: u64, visited: &m
 
     // Локальный минимум или предохранитель длины: заливаем котловину
     // вокруг конечной точки — река заканчивается озером.
-    if !reached_water {
-        flood_basin(world, pos, n, seed);
+    if !reached_water && !flood_basin(world, pos, n, seed, cancelled) {
+        return false;
     }
 
     // Красим русло с ростом ширины от истока к устью. Уже водные тайлы
@@ -671,6 +766,7 @@ fn carve_river(world: &mut World, start: TilePos, n: i32, seed: u64, visited: &m
             );
         }
     }
+    true
 }
 
 /// Минимальный размер озера-стока: меньше — река «дорезает» чашу до этого
@@ -690,7 +786,13 @@ const BASIN_EPS: f32 = 0.01;
 /// (сток в море/озеро), заливка заканчивается: река уже куда-то впадает.
 /// Если чаша вышла меньше минимального размера, к ней добавляются самые
 /// низкие соседние тайлы, пока озеро не станет заметным на карте.
-fn flood_basin(world: &mut World, center: TilePos, n: i32, seed: u64) {
+fn flood_basin(
+    world: &mut World,
+    center: TilePos,
+    n: i32,
+    seed: u64,
+    cancelled: &dyn Fn() -> bool,
+) -> bool {
     let level = elevation_at(center.x, center.y, n, seed);
     let mut lake: Vec<TilePos> = vec![center];
     let mut in_lake: HashSet<u32> = HashSet::new();
@@ -700,6 +802,9 @@ fn flood_basin(world: &mut World, center: TilePos, n: i32, seed: u64) {
     let mut queue: VecDeque<TilePos> = VecDeque::new();
     queue.push_back(center);
     while let Some(pos) = queue.pop_front() {
+        if cancelled() {
+            return false;
+        }
         if lake.len() >= BASIN_MAX_TILES {
             break;
         }
@@ -767,6 +872,7 @@ fn flood_basin(world: &mut World, center: TilePos, n: i32, seed: u64) {
     for pos in lake {
         world.set_terrain(pos, TileType::Water);
     }
+    true
 }
 
 /// Линейный индекс тайла (row-major) — ключ множества посещённых позиций.

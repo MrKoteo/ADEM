@@ -1,10 +1,28 @@
 //! Тесты процедурной генерации: детерминизм, биомы, глубины воды, реки,
 //! посев объектов и заселение существ.
 
-use crate::simulation::generation::generate_world;
+use crate::simulation::generation::{generate_world, generate_world_cancellable};
 use crate::simulation::objects::{ObjectKind, WorldObject};
+use crate::simulation::scheduler::Scheduler;
 use crate::simulation::tile::TileType;
+use crate::simulation::vegetation::seed_all_cancellable;
 use crate::simulation::world::{TilePos, World, WorldSize};
+
+/// Отменяемая генерация уважает флаг с первого же прохода: поток не
+/// достраивает карту, а сразу возвращает None. Синхронная обёртка без
+/// отмены даёт тот же мир, что и раньше.
+#[test]
+fn generation_stops_when_cancelled() {
+    assert!(generate_world_cancellable(WorldSize::new(256), 42, &|| true).is_none());
+
+    let world = generate_world(WorldSize::new(256), 42);
+    assert!(world.size.tiles() == 256);
+    // Посев цепочек тоже отменяем: частичный планировщик использовать нельзя.
+    let mut scheduler = Scheduler::default();
+    assert!(!seed_all_cancellable(&world, &mut scheduler, 100, &|| true));
+    let mut scheduler = Scheduler::default();
+    assert!(seed_all_cancellable(&world, &mut scheduler, 100, &|| false));
+}
 
 /// Считает объекты мира по видам. Обход HashMap не детерминирован,
 /// поэтому миры сравниваются по счётчикам, а не по порядку объектов.

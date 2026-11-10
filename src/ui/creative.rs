@@ -287,9 +287,12 @@ fn spawn_filtered_rows(
     names: &ItemNames,
 ) {
     let filter = filter.to_lowercase();
+    // Названия в нижнем регистре кэшированы в `ItemNames`: пересборка
+    // рядов на каждый ввод больше не аллоцирует 91 строку и не делает
+    // `to_lowercase` для всех предметов.
     let items: Vec<ItemKind> = ItemKind::ALL
         .into_iter()
-        .filter(|kind| filter.is_empty() || names.name(*kind).to_lowercase().contains(&filter))
+        .filter(|kind| filter.is_empty() || names.lower_name(*kind).contains(&filter))
         .collect();
     for row_start in (0..items.len()).step_by(TILES_PER_ROW) {
         rows.spawn(Node {

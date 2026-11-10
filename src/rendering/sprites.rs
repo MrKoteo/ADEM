@@ -16,8 +16,8 @@ use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use crate::app::state::{EditorSelection, GameMode, GameState, TickAccumulator, interpolate_pos};
 use crate::simulation::{BuildingKind, ChunkPos, EntityKind, Facing, ObjectKind, TilePos, World, WorldPos, CHUNK_SIZE, TILE_SIZE};
 
-use super::isometric::{WORLD_TILE_SIZE, world_position};
-use super::terrain::{BLOCK_TILES, BlockPos, lod_for_scale};
+use super::isometric::{WORLD_TILE_SIZE, tile_elevation, world_position};
+use super::terrain::{BlockPos, lod_for_scale};
 use super::textures::{AtlasKind, AtlasTexture, TextureAtlases};
 
 /// Метка динамического спрайта существа (животного, человека).
@@ -39,6 +39,10 @@ pub(crate) struct ItemCountLabel;
 pub(crate) struct EntitySprites {
     map: HashMap<u64, Entity>,
     textures: HashMap<u64, AtlasTexture>,
+    /// Последний применённый к Bevy-сущности трансформ: стоящие/лежащие
+    /// существа не двигаются, и переинсёрт `Transform` каждый кадр — лишняя
+    /// работа для тысяч статичных спрайтов (и лишние change-detection лучи).
+    transforms: HashMap<u64, Transform>,
 }
 
 /// Соответствие «id item-сущности дропа → (спрайт, последняя позиция)».
@@ -68,6 +72,55 @@ pub(crate) struct WorldSpriteAssets {
     pub(crate) outlines: HashMap<AtlasTexture, OutlineAsset>,
     /// Кэш материалов голограммы: (атлас, зелёная/красная сторона).
     pub(crate) hologram_materials: HashMap<(AtlasKind, bool), Handle<StandardMaterial>>,
+    /// Размеры спрайтов объектов по размеру исходной текстуры: при массовой
+    /// пересборке LOD-0 блоков одна и та же текстура масштабируется тысячи
+    /// раз, пересчёт на каждый объект лишний.
+    object_sizes: HashMap<UVec2, Vec2>,
+    /// Смещения декора в плоскости земли по повороту камеры: поворот
+    /// фиксирован, но вызовы `ground_screen_vertical_offset` шли на каждый
+    /// объект и предмет каждого блока.
+    ground_offsets: HashMap<[u32; 4], DecorOffsets>,
+}
+
+/// Предвычисленные при данном повороте камеры величины декора.
+#[derive(Clone, Copy)]
+pub(crate) struct DecorOffsets {
+    /// Верх камеры в мире (направление «вверх по экрану»).
+    pub(crate) camera_up: Vec3,
+    /// Сдвиг объекта вниз по экрану в плоскости земли.
+    pub(crate) object_drop: Vec3,
+    /// Полное смещение предмета на земле: высота + экранный сдвиг.
+    pub(crate) item_offset: Vec3,
+}
+
+impl WorldSpriteAssets {
+    /// Смещения декора для поворота камеры (кэш по битам кватерниона).
+    pub(crate) fn decor_offsets(&mut self, camera_rotation: Quat) -> DecorOffsets {
+        let key = camera_rotation.to_array().map(f32::to_bits);
+        if let Some(offsets) = self.ground_offsets.get(&key) {
+            return *offsets;
+        }
+        let camera_up = camera_rotation * Vec3::Y;
+        let offsets = DecorOffsets {
+            camera_up,
+            object_drop: ground_screen_vertical_offset(
+                camera_rotation,
+                -OBJECT_SPRITE_SCREEN_DROP_PX,
+            ),
+            item_offset: camera_up * (TILE_SIZE * 0.3)
+                + ground_screen_vertical_offset(camera_rotation, GROUND_ITEM_SCREEN_OFFSET),
+        };
+        self.ground_offsets.insert(key, offsets);
+        offsets
+    }
+
+    /// Размер спрайта объекта по размерам исходной текстуры (кэш).
+    pub(crate) fn object_size(&mut self, texture_size: UVec2) -> Vec2 {
+        *self
+            .object_sizes
+            .entry(texture_size)
+            .or_insert_with(|| object_sprite_size(texture_size))
+    }
 }
 
 /// Контур выделения для одной текстуры: материал белого дилатированного
@@ -509,6 +562,11 @@ pub(crate) fn update_item_entity_sprites(
     sprite_transforms: Query<&mut Transform, With<EntitySprite>>,
 ) {
     let Some(world) = state.world.as_ref() else {
+        // Во время фонового сохранения мир временно в потоке: спрайты не
+        // снимаем, они продолжают показывать замороженный кадр.
+        if state.saving {
+            return;
+        }
         for (_, (entity, _)) in sprites.map.drain() {
             commands.entity(entity).despawn();
         }
@@ -612,10 +670,14 @@ pub(crate) fn update_entity_sprites(
     camera: Query<(&Camera, &Transform, &Projection), With<Camera2d>>,
 ) {
     let Some(world) = state.world.as_ref() else {
+        if state.saving {
+            return;
+        }
         for (_, entity) in sprites.map.drain() {
             commands.entity(entity).despawn();
         }
         sprites.textures.clear();
+        sprites.transforms.clear();
         for (_, overlay) in flashes.overlays.drain() {
             commands.entity(overlay).despawn();
         }
@@ -677,12 +739,21 @@ pub(crate) fn update_entity_sprites(
             visuals.bottom_offset(texture),
             entity.facing == Facing::Left,
         );
+        // Статичные (стоящие/лежащие) существа не двигаются: сравниваем
+        // готовый трансформ с прошлым кадром и не трогаем Transform, если
+        // ничего не изменилось. При тысячах существ это снимает
+        // переинсёрт компонента и лишние change-detection лучи каждый кадр.
+        let texture_changed = sprites.textures.get(&entity.id) != Some(&texture);
+        let transform_changed = sprites
+            .transforms
+            .get(&entity.id)
+            .is_none_or(|last| !same_transform(last, &transform));
 
         match sprites.map.get(&entity.id).copied() {
             Some(bevy_entity) => {
                 // Материал меняется только со сменой текстуры (состояние/кадр
                 // анимации): без смены — двигаем спрайт, не трогая компонент.
-                if sprites.textures.get(&entity.id) != Some(&texture) {
+                if texture_changed {
                     let material = world_sprite_material(
                         &atlases,
                         texture,
@@ -693,8 +764,7 @@ pub(crate) fn update_entity_sprites(
                     commands
                         .entity(bevy_entity)
                         .insert((Mesh3d(mesh.clone()), MeshMaterial3d(material), transform));
-                    sprites.textures.insert(entity.id, texture);
-                } else {
+                } else if transform_changed {
                     commands.entity(bevy_entity).insert(transform);
                 }
             }
@@ -715,8 +785,13 @@ pub(crate) fn update_entity_sprites(
                     ))
                     .id();
                 sprites.map.insert(entity.id, bevy_entity);
-                sprites.textures.insert(entity.id, texture);
             }
+        }
+        if texture_changed {
+            sprites.textures.insert(entity.id, texture);
+        }
+        if transform_changed {
+            sprites.transforms.insert(entity.id, transform);
         }
 
         // Красная подсветка: копия текстуры с красной 30% альфой поверх —
@@ -724,16 +799,20 @@ pub(crate) fn update_entity_sprites(
         let hurt = flashes.timers.contains_key(&entity.id);
         match flashes.overlays.get(&entity.id).copied() {
             Some(overlay) if hurt => {
-                let material = world_sprite_material(
-                    &atlases,
-                    texture,
-                    true,
-                    &mut sprite_assets,
-                    &mut materials,
-                );
-                commands
-                    .entity(overlay)
-                    .insert((Mesh3d(mesh.clone()), MeshMaterial3d(material), transform));
+                // Overlay — тоже статичный квад: обновляем его только при
+                // смене текстуры/позы, а не каждый кадр.
+                if texture_changed || transform_changed {
+                    let material = world_sprite_material(
+                        &atlases,
+                        texture,
+                        true,
+                        &mut sprite_assets,
+                        &mut materials,
+                    );
+                    commands
+                        .entity(overlay)
+                        .insert((Mesh3d(mesh.clone()), MeshMaterial3d(material), transform));
+                }
             }
             Some(overlay) => {
                 flashes.overlays.remove(&entity.id);
@@ -767,6 +846,7 @@ pub(crate) fn update_entity_sprites(
             commands.entity(entity).despawn();
         }
         sprites.textures.remove(&id);
+        sprites.transforms.remove(&id);
         // Существо покинуло экран или умерло: вспышка и overlay не нужны.
         flashes.prev_hp.remove(&id);
         flashes.timers.remove(&id);
@@ -798,6 +878,9 @@ pub(crate) fn update_selection_outlines(
     camera: Query<(&Camera, &Transform), With<Camera2d>>,
 ) {
     let Some(world) = state.world.as_ref() else {
+        if state.saving {
+            return;
+        }
         for (_, entity) in outlines.map.drain() {
             commands.entity(entity).despawn();
         }
@@ -912,6 +995,12 @@ pub(crate) fn update_selection_outlines(
             }
         }
     }
+}
+
+/// Совпадают ли трансформы спрайта (точное сравнение): у статичных существ
+/// все три компонента получаются из тех же входных данных бит-в-бит.
+fn same_transform(a: &Transform, b: &Transform) -> bool {
+    a.translation == b.translation && a.rotation == b.rotation && a.scale == b.scale
 }
 
 /// Спрайт существа развёрнут к камере и стоит на поверхности тайла.
@@ -1132,7 +1221,8 @@ impl BlockDecor {
 }
 
 /// Спавнит весь декор блока: объекты/постройки, культуры и предметы.
-/// Вызывается при сборке и обновлении блока; внутри — батчинг по атласам.
+/// `step` — сторона блока в тайлах (своя для LOD: 16/32/64). Вызывается
+/// при сборке и обновлении блока; внутри — батчинг по атласам.
 pub(crate) fn spawn_block_decor(
     parent: &mut EntityCommands,
     meshes: &mut Assets<Mesh>,
@@ -1140,28 +1230,35 @@ pub(crate) fn spawn_block_decor(
     sprite_assets: &mut WorldSpriteAssets,
     world: &World,
     block: BlockPos,
+    step: i32,
     origin: Vec3,
     camera_rotation: Quat,
     atlases: &TextureAtlases,
     font: &Handle<Font>,
 ) {
+    let offsets = sprite_assets.decor_offsets(camera_rotation);
     let mut decor = BlockDecor::default();
     collect_objects(
         &mut decor,
         atlases,
         world,
         block,
+        step,
         origin,
         camera_rotation,
+        offsets,
+        sprite_assets,
     );
-    collect_crops(&mut decor, atlases, world, block, origin);
+    collect_crops(&mut decor, atlases, world, block, step, origin);
     collect_items(
         &mut decor,
         atlases,
         world,
         block,
+        step,
         origin,
         camera_rotation,
+        offsets,
     );
     decor.spawn(parent, atlases, meshes, materials, sprite_assets, font);
 }
@@ -1173,12 +1270,15 @@ fn collect_objects(
     atlases: &TextureAtlases,
     world: &World,
     block: BlockPos,
+    step: i32,
     origin: Vec3,
     camera_rotation: Quat,
+    offsets: DecorOffsets,
+    sprite_assets: &mut WorldSpriteAssets,
 ) {
-    let bx0 = block.x * BLOCK_TILES;
-    let by0 = block.y * BLOCK_TILES;
-    let chunks_per_block = BLOCK_TILES / CHUNK_SIZE as i32;
+    let bx0 = block.x * step;
+    let by0 = block.y * step;
+    let chunks_per_block = step / CHUNK_SIZE as i32;
     let cps = world.chunks_per_side as i32;
 
     for cy in 0..chunks_per_block {
@@ -1192,9 +1292,12 @@ fn collect_objects(
             for (&idx, obj) in &chunk.objects {
                 let tile_x = cpx * CHUNK_SIZE as i32 + (idx % CHUNK_SIZE as u8) as i32;
                 let tile_y = cpy * CHUNK_SIZE as i32 + (idx / CHUNK_SIZE as u8) as i32;
-                let tile_world = world_position(
-                    world,
-                    Vec2::new(tile_x as f32 + 0.5, tile_y as f32 + 0.5),
+                // Высота читается из уже взятого чанка: `world_position`
+                // на каждый объект снова искал бы чанк и делал div/mod.
+                let tile_world = Vec3::new(
+                    (tile_x as f32 + 0.5) * WORLD_TILE_SIZE,
+                    (tile_y as f32 + 0.5) * WORLD_TILE_SIZE,
+                    tile_elevation(chunk.terrain.get(idx as usize)),
                 );
                 let anchor = tile_world - origin;
                 match obj.kind {
@@ -1217,18 +1320,16 @@ fn collect_objects(
                     _ => {
                         let texture = atlases.object(obj);
                         let uv = atlases.uv(texture);
-                        let size = object_sprite_size(atlases.source_size(texture));
+                        // Размер по текстуре берётся из кэша: массовая
+                        // пересборка LOD-0 блоков не пересчитывает его
+                        // для каждого дерева/куста.
+                        let size = sprite_assets.object_size(atlases.source_size(texture));
                         let height = size.y * 0.5;
-                        let camera_up = camera_rotation * Vec3::Y;
                         // Сдвиг вниз по экрану — в плоскости земли, без
                         // изменения высоты: спрайт «стоит» на тайле, но
                         // не уходит под рельеф.
-                        let screen_drop = ground_screen_vertical_offset(
-                            camera_rotation,
-                            -OBJECT_SPRITE_SCREEN_DROP_PX,
-                        );
                         let mut transform = Transform::from_translation(
-                            anchor + camera_up * height + screen_drop,
+                            anchor + offsets.camera_up * height + offsets.object_drop,
                         )
                         .with_rotation(camera_rotation);
                         transform.scale = Vec3::new(size.x, size.y, 1.0);
@@ -1261,11 +1362,12 @@ fn collect_crops(
     atlases: &TextureAtlases,
     world: &World,
     block: BlockPos,
+    step: i32,
     origin: Vec3,
 ) {
-    let bx0 = block.x * BLOCK_TILES;
-    let by0 = block.y * BLOCK_TILES;
-    let chunks_per_block = BLOCK_TILES / CHUNK_SIZE as i32;
+    let bx0 = block.x * step;
+    let by0 = block.y * step;
+    let chunks_per_block = step / CHUNK_SIZE as i32;
     let cps = world.chunks_per_side as i32;
 
     for cy in 0..chunks_per_block {
@@ -1281,9 +1383,10 @@ fn collect_crops(
                     x: cpx * CHUNK_SIZE as i32 + (idx % CHUNK_SIZE as u8) as i32,
                     y: cpy * CHUNK_SIZE as i32 + (idx / CHUNK_SIZE as u8) as i32,
                 };
-                let tile_world = world_position(
-                    world,
-                    Vec2::new(tile.x as f32 + 0.5, tile.y as f32 + 0.5),
+                let tile_world = Vec3::new(
+                    (tile.x as f32 + 0.5) * WORLD_TILE_SIZE,
+                    (tile.y as f32 + 0.5) * WORLD_TILE_SIZE,
+                    tile_elevation(chunk.terrain.get(idx as usize)),
                 );
                 let texture = atlases.crop(crop.kind, crop.stage);
                 let uv = atlases.uv(texture);
@@ -1306,12 +1409,14 @@ fn collect_items(
     atlases: &TextureAtlases,
     world: &World,
     block: BlockPos,
+    step: i32,
     origin: Vec3,
     camera_rotation: Quat,
+    offsets: DecorOffsets,
 ) {
-    let bx0 = block.x * BLOCK_TILES;
-    let by0 = block.y * BLOCK_TILES;
-    let chunks_per_block = BLOCK_TILES / CHUNK_SIZE as i32;
+    let bx0 = block.x * step;
+    let by0 = block.y * step;
+    let chunks_per_block = step / CHUNK_SIZE as i32;
     let cps = world.chunks_per_side as i32;
 
     for cy in 0..chunks_per_block {
@@ -1327,29 +1432,24 @@ fn collect_items(
                     x: cpx * CHUNK_SIZE as i32 + (idx % CHUNK_SIZE as u8) as i32,
                     y: cpy * CHUNK_SIZE as i32 + (idx / CHUNK_SIZE as u8) as i32,
                 };
-                let tile_world = world_position(
-                    world,
-                    Vec2::new(tile.x as f32 + 0.5, tile.y as f32 + 0.5),
+                let tile_world = Vec3::new(
+                    (tile.x as f32 + 0.5) * WORLD_TILE_SIZE,
+                    (tile.y as f32 + 0.5) * WORLD_TILE_SIZE,
+                    tile_elevation(chunk.terrain.get(idx as usize)),
                 );
                 let local = tile_world - origin;
                 let item_anchor = local + Vec3::Z;
-                let item_height = TILE_SIZE * 0.3;
-                let item_offset = camera_rotation * Vec3::Y * item_height
-                    + ground_screen_vertical_offset(
-                        camera_rotation,
-                        GROUND_ITEM_SCREEN_OFFSET,
-                    );
                 let texture = atlases.item(stack.kind);
                 let uv = atlases.uv(texture);
                 let item_size = Vec2::splat(TILE_SIZE * 0.6 * GROUND_ITEM_SCALE);
                 let mut transform =
-                    Transform::from_translation(item_anchor + item_offset)
+                    Transform::from_translation(item_anchor + offsets.item_offset)
                         .with_rotation(camera_rotation);
                 transform.scale = Vec3::new(item_size.x, item_size.y, 1.0);
                 decor.push(texture, uv, transform);
                 if stack.count > 1 {
                     let label_anchor = item_anchor
-                        + item_offset
+                        + offsets.item_offset
                         + Vec3::new(TILE_SIZE * 0.25, -TILE_SIZE * 0.25, 2.0);
                     decor.labels.push((
                         Transform::from_translation(label_anchor)

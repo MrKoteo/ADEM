@@ -226,6 +226,20 @@ pub struct GameState {
     pub active_menu: Option<MenuKind>,
     /// Флаг: мир перегенерирован и рендер надо обновить.
     pub pending_rerender: bool,
+    /// Счётчик замен мира: растёт при генерации, загрузке сейва. Камера
+    /// по его изменению один раз центрируется на новом мире (при
+    /// уменьшении 8k → 256 иначе осталась бы в пустоте).
+    pub world_epoch: u64,
+    /// Идёт фоновая генерация мира: симуляция стоит (тики не идут), UI и
+    /// редактор остаются отзывчивыми. Сбрасывается при установке мира или
+    /// отмене.
+    pub generating: bool,
+    /// Идёт фоновое сохранение: мир и планировщик временно в потоке, тики
+    /// стоят, второй запрос отклоняется.
+    pub saving: bool,
+    /// Идёт фоновая загрузка сохранения: старый мир продолжает жить до
+    /// готовности нового.
+    pub loading: bool,
     /// Роль игрока: наблюдатель (редактор) или существо в мире.
     pub mode: GameMode,
     /// Захваченное существо (игра за существо, GAME_DESIGN 4.1): id в
@@ -258,6 +272,10 @@ impl Default for GameState {
             seed: 42,
             active_menu: None,
             pending_rerender: false,
+            world_epoch: 0,
+            generating: false,
+            saving: false,
+            loading: false,
             mode: GameMode::Observer,
             controlled: None,
             controlled_ai: false,
@@ -269,6 +287,19 @@ impl Default for GameState {
 }
 
 impl GameState {
+    /// Мир заменён целиком (генерация, загрузка сейва): новая эпоха для
+    /// камеры, полная перерисовка рендера, чистое состояние редактирования.
+    /// Захват снимается: id существ из прежнего мира больше не валидны.
+    pub fn mark_world_replaced(&mut self) {
+        self.world_epoch = self.world_epoch.wrapping_add(1);
+        self.pending_rerender = true;
+        self.dirty_tiles.clear();
+        self.generating = false;
+        self.saving = false;
+        self.loading = false;
+        self.set_controlled(None);
+    }
+
     /// Захватывает существо (режим игрока) или отпускает его
     /// (`None` — наблюдатель). Единственная точка смены режима.
     /// Захват всегда начинается под полным контролем: ИИ выключен.

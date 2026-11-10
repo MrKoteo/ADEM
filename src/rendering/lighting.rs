@@ -20,10 +20,8 @@ use bevy::sprite_render::{AlphaMode2d, Material2d};
 use crate::app::settings::Settings;
 use crate::app::state::{ClockRes, GameState};
 use crate::rendering::isometric::{WORLD_TILE_SIZE, world_position};
+use crate::simulation::moon;
 use crate::simulation::{BuildingKind, ChunkPos, ItemKind, ObjectKind, TilePos, World, WorldPos, CHUNK_SIZE};
-
-/// Светлота мира глухой ночью как доля дневной освещённости.
-pub(crate) const NIGHT_DAYLIGHT: f32 = 0.08;
 
 /// Радиус света костра в тайлах.
 pub(crate) const LIGHT_RADIUS_TILES: f32 = 5.0;
@@ -48,10 +46,11 @@ const DUSK_END_H: f32 = 20.0;
 
 const DARKNESS_SHADER_PATH: &str = "shaders/darkness.wesl";
 
-/// Светлота мира по доле суток [0, 1): 1.0 днём (7:00–18:00), NIGHT_DAYLIGHT
-/// глухой ночью (20:00–5:00), между ними — плавные рассвет и закат (smoothstep).
+/// Светлота мира по доле суток [0, 1): 1.0 днём (7:00–18:00),
+/// `night_daylight` глухой ночью (20:00–5:00), между ними — плавные рассвет
+/// и закат (smoothstep). Ночной уровень задаёт фаза луны (0.03–0.24).
 /// Затенение равно `1 − daylight`.
-pub(crate) fn daylight_factor(day_fraction: f32) -> f32 {
+pub(crate) fn daylight_factor(day_fraction: f32, night_daylight: f32) -> f32 {
     let hour = day_fraction.fract() * 24.0;
     let t = if hour >= DUSK_END_H || hour < DAWN_START_H {
         0.0
@@ -62,7 +61,7 @@ pub(crate) fn daylight_factor(day_fraction: f32) -> f32 {
     } else {
         1.0 - smoothstep((hour - DUSK_START_H) / (DUSK_END_H - DUSK_START_H))
     };
-    NIGHT_DAYLIGHT + (1.0 - NIGHT_DAYLIGHT) * t
+    night_daylight + (1.0 - night_daylight) * t
 }
 
 /// Классический smoothstep на [0, 1].
@@ -179,6 +178,12 @@ pub(crate) fn update_campfire_positions(
     }
 
     let Some(world) = state.world.as_ref() else {
+        if state.saving {
+            // Реестр костров сохраняется, пока мир временно в потоке
+            // сохранения: иначе после возврата огни пропали бы до
+            // следующего полного пересканирования.
+            return;
+        }
         if !lights.positions.is_empty() {
             lights.positions.clear();
             lights.version += 1;
@@ -254,10 +259,16 @@ pub(crate) fn update_darkness_overlay(
         return;
     }
 
-    let daylight = daylight_factor(clock.0.time_of_day_fraction());
+    let daylight = daylight_factor(
+        clock.0.time_of_day_fraction(),
+        moon::night_daylight(clock.0.tick),
+    );
     let darkness = (1.0 - daylight).clamp(0.0, 1.0);
 
     let Some(world) = state.world.as_ref() else {
+        if state.saving {
+            return;
+        }
         despawn_overlay(&mut commands, &mut overlay);
         return;
     };

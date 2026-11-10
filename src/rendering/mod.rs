@@ -48,9 +48,9 @@ pub(crate) use sprites::{
 };
 #[allow(unused_imports)]
 pub(crate) use terrain::{
-    BLOCK_TILES, BlockPos, LodTransition, MAX_LOD, RenderMetrics, TARGET_CELL_PX,
-    TerrainRender, build_block_mesh, decor_visible_at, dominant_atlas_index, ensure_ground_material,
-    lod_for_scale, lod_transition_for, render_world, tile_atlas_index,
+    MAX_BLOCK_TILES, BlockPos, LodTransition, MAX_LOD, RenderMetrics, TARGET_CELL_PX,
+    TerrainRender, block_tiles_for_lod, build_block_mesh, decor_visible_at, dominant_atlas_index,
+    ensure_ground_material, lod_for_scale, lod_transition_for, render_world, tile_atlas_index,
 };
 #[allow(unused_imports)]
 pub(crate) use textures::{AtlasTexture, GameTextures, TextureAtlases};

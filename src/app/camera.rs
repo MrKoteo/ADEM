@@ -15,7 +15,7 @@ use crate::ui::pause_menu::BindingCapture;
 use crate::ui::text_input_focused;
 
 const ZOOM_MIN: f32 = 0.08;
-const ZOOM_MAX: f32 = 150.0;
+const ZOOM_MAX: f32 = 200.0;
 const ZOOM_STEP: f32 = 0.12;
 const DEFAULT_SCALE: f32 = 2.0;
 const CAMERA_YAW: f32 = 5.0 * std::f32::consts::FRAC_PI_4;
@@ -39,6 +39,15 @@ impl CameraTarget {
             height_velocity: 0.0,
             following_player: false,
         }
+    }
+
+    /// Ставит камеру точно в центр мира (высота — поверхность). Вызывается
+    /// один раз после перегенерации/загрузки мира и вручную по L.
+    pub(crate) fn center_on_world(&mut self, world_size: u32) {
+        let center = world_size as f32 * WORLD_TILE_SIZE * 0.5;
+        self.target = Vec3::new(center, center, 0.0);
+        self.height_velocity = 0.0;
+        self.following_player = false;
     }
 
     fn camera_transform(&self, distance: f32) -> Transform {
@@ -70,6 +79,8 @@ impl Plugin for CameraPlugin {
                     zoom_system,
                     editor_move_system,
                     pan_system,
+                    recenter_on_world_change,
+                    center_camera_key,
                     follow_player,
                     update_camera_transforms,
                 )
@@ -211,8 +222,47 @@ fn pan_system(
     camera_target.target += right * (-delta.x * scale) + up * (delta.y * scale);
 }
 
-fn follow_player(
+/// Один раз центрирует камеру на мире после перегенерации/загрузки:
+/// при уменьшении мира (8k → 256) прежняя точка осталась бы в пустоте за
+/// границей карты. Следит за `GameState::world_epoch`, а не за размером:
+/// смена сида при том же размере тоже должна вернуть камеру к центру.
+fn recenter_on_world_change(
     state: Res<GameState>,
+    mut camera_target: ResMut<CameraTarget>,
+    mut last_epoch: Local<Option<u64>>,
+) {
+    if *last_epoch == Some(state.world_epoch) {
+        return;
+    }
+    *last_epoch = Some(state.world_epoch);
+    if state.world.is_some() {
+        camera_target.center_on_world(state.world_size.tiles());
+    }
+}
+
+/// Ручное центрирование камеры на мире по клавише L. Бинд системный
+/// (не переназначается): работает в наблюдателе; в режиме игрока камера
+/// следует за существом и всё равно перезапишет точку на этом же кадре.
+fn center_camera_key(
+    keys: Res<ButtonInput<KeyCode>>,
+    state: Res<GameState>,
+    capture: Res<BindingCapture>,
+    focus: Res<InputFocus>,
+    text_inputs: Query<(), With<TextInput>>,
+    mut camera_target: ResMut<CameraTarget>,
+) {
+    if !keys.just_pressed(KeyCode::KeyL)
+        || capture.0.is_some()
+        || text_input_focused(&focus, &text_inputs)
+        || modal_menu_open(&state)
+        || state.world.is_none()
+    {
+        return;
+    }
+    camera_target.center_on_world(state.world_size.tiles());
+}
+
+fn follow_player(    state: Res<GameState>,
     acc: Res<TickAccumulator>,
     time: Res<Time>,
     mut camera_target: ResMut<CameraTarget>,

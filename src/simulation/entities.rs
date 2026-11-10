@@ -9,18 +9,16 @@
 //! смены состояния; случайность детерминирована seed'ом мира, id существа
 //! и тиком, поэтому состояние ИИ не нужно сохранять отдельным RNG.
 
-use std::collections::{HashSet, VecDeque};
-
-use rand::rngs::StdRng;
-use rand::{RngExt, SeedableRng}; // Bevy 0.20 / rand 0.10: RngExt вместо Rng
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use super::chunk::Chunk;
 use super::hunger::{Activity, Hunger};
 use super::items::Inventory;
 use super::movement;
+use super::rng::{SplitMix64, mix_seed};
 use super::spatial::SpatialGrid;
 use super::tile::TileType;
-use super::time::TICKS_PER_SEC;
+use super::time::{TICKS_PER_SEC, TICKS_PER_YEAR};
 use super::world::{World, WorldPos, split_tile, TilePos};
 
 /// Радиус, в котором волк выбирает следующую точку брожения, тайлов.
@@ -137,6 +135,22 @@ impl EntityKind {
     /// Все виды существ в стабильном порядке (генерация, UI редактора).
     pub const ALL: [EntityKind; 3] = [EntityKind::Wolf, EntityKind::Human, EntityKind::Rabbit];
 
+    /// Номинальная продолжительность жизни вида в игровых годах.
+    /// Фактическая при спавне отклоняется на ±10% (см. `SimEntity::new`).
+    /// Значения сбалансированы под текущий календарь; правятся здесь.
+    pub fn nominal_lifespan_years(self) -> u64 {
+        match self {
+            EntityKind::Wolf => 12,
+            EntityKind::Human => 70,
+            EntityKind::Rabbit => 6,
+        }
+    }
+
+    /// Номинальная продолжительность жизни вида в тиках.
+    pub fn nominal_lifespan_ticks(self) -> u64 {
+        self.nominal_lifespan_years().saturating_mul(TICKS_PER_YEAR)
+    }
+
     /// Максимальный запас здоровья вида.
     pub fn max_hp(self) -> f32 {
         match self {
@@ -180,6 +194,35 @@ impl EntityKind {
             1 => Some(Self::Human),
             2 => Some(Self::Rabbit),
             _ => None,
+        }
+    }
+}
+
+/// Пол существа. Значения стабильны для сохранений; новые — только в конец.
+/// Влияет пока только на будущую репродукцию (GAME_DESIGN 4.1), но уже
+/// хранится и отображается в инспекторе.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+pub enum Gender {
+    Male,
+    Female,
+}
+
+impl Gender {
+    /// Пол по стабильному значению u8 (сохранения).
+    pub fn from_discriminant(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::Male),
+            1 => Some(Self::Female),
+            _ => None,
+        }
+    }
+
+    /// Подпись для UI.
+    pub fn label(self) -> &'static str {
+        match self {
+            Gender::Male => "мужской",
+            Gender::Female => "женский",
         }
     }
 }
@@ -324,6 +367,13 @@ pub struct SimEntity {
     /// Стабильный идентификатор в пределах мира (для планировщика и команд).
     pub id: u64,
     pub kind: EntityKind,
+    /// Пол особи: случайный при спавне (детерминированно от id).
+    pub gender: Gender,
+    /// Прожитые тики. При спавне — случайная доля 20–80% от `lifetime_ticks`.
+    pub age_ticks: u64,
+    /// Индивидуальная продолжительность жизни в тиках: номинал вида ±10%.
+    /// Достигнув её, существо умирает обычной смертью (с дропом).
+    pub lifetime_ticks: u64,
     /// Позиция в тайлах (непрерывная).
     pub pos: WorldPos,
     /// Позиция на прошлом тике: рендер интерполирует между ней и `pos`.
@@ -366,12 +416,29 @@ pub struct SimEntity {
 }
 
 impl SimEntity {
-    /// Новое существо в состоянии «стоит» с полным здоровьем. Разумные
-    /// виды получают пустой ум.
+    /// Новое существо в состоянии «стоит» с полным здоровьем. Пол, возраст
+    /// и продолжительность жизни разыгрываются детерминированно от id:
+    /// поток не хранится и воспроизводится после загрузки/перегенерации.
     fn new(id: u64, kind: EntityKind, pos: WorldPos) -> Self {
+        let mut rng = SplitMix64::new(mix_seed(id, 0xA6E0_0000_0000_0001));
+        let gender = if rng.next_below(2) == 0 {
+            Gender::Male
+        } else {
+            Gender::Female
+        };
+        // Номинал ±10%: особи одного вида стареют не синхронно.
+        let nominal = kind.nominal_lifespan_ticks();
+        let lifetime_ticks =
+            ((nominal as f64 * (0.9 + 0.2 * rng.next_f32() as f64)) as u64).max(1);
+        // Стартовый возраст — от 20% до 80% жизни (не новорождённые).
+        let age_ticks = ((lifetime_ticks as f64 * (0.2 + 0.6 * rng.next_f32() as f64)) as u64)
+            .min(lifetime_ticks.saturating_sub(1));
         Self {
             id,
             kind,
+            gender,
+            age_ticks,
+            lifetime_ticks,
             pos,
             prev_pos: pos,
             facing: Facing::Right,
@@ -399,6 +466,16 @@ impl SimEntity {
         self.kind.walk_speed()
     }
 
+    /// Возраст в игровых годах (для UI).
+    pub fn age_years(&self) -> u64 {
+        self.age_ticks / TICKS_PER_YEAR
+    }
+
+    /// Индивидуальная продолжительность жизни в игровых годах (для UI).
+    pub fn lifespan_years(&self) -> u64 {
+        self.lifetime_ticks / TICKS_PER_YEAR
+    }
+
     /// Кадр анимации ходьбы. У волка два кадра раз в `WALK_FRAME_TICKS`,
     /// у кролика три прыжковых кадра раз в `RABBIT_WALK_FRAME_TICKS`.
     pub fn walk_frame(&self) -> u8 {
@@ -413,13 +490,17 @@ impl SimEntity {
 }
 
 /// Хранилище существ мира. `Vec` вместо `HashMap`: порядок обхода
-/// детерминирован, а поиск по id пока не горячий путь.
+/// детерминирован, а id→индекс кэшируется рядом (`index`) — `get/get_mut`
+/// O(1), а не линейный поиск по тысячам существ. Индекс не входит в
+/// сохранения и пересобирается при редких удалениях.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct EntityStore {
     /// Существа в порядке создания (id возрастают).
     pub entities: Vec<SimEntity>,
     /// Следующий свободный идентификатор; 0 зарезервирован как «нет id».
     pub next_id: u64,
+    /// id → позиция в `entities`. Поддерживается `spawn/remove`.
+    index: HashMap<u64, usize>,
 }
 
 /// Переиспользуемые буферы поведения фауны: снимки позиций и
@@ -439,7 +520,37 @@ pub(crate) struct FaunaScratch {
     pub(crate) meat_grid: SpatialGrid,
 }
 
+/// Переиспользуемые буферы BFS поиска суши: `HashSet` и очередь с
+/// сохранённой ёмкостью. Раньше каждый вызов `nearest_land` аллоцировал
+/// их заново — на существо в воде и каждом повторе поиска.
+#[derive(Default)]
+pub(crate) struct LandSearchScratch {
+    visited: HashSet<(i32, i32)>,
+    queue: VecDeque<(i32, i32)>,
+}
+
 impl EntityStore {
+    /// Создаёт хранилище из готового списка (загрузка сохранения):
+    /// индекс id→позиция строится здесь, а не читается из файла.
+    pub(crate) fn from_entities(entities: Vec<SimEntity>, next_id: u64) -> Self {
+        let mut store = Self {
+            entities,
+            next_id,
+            index: HashMap::new(),
+        };
+        store.rebuild_index();
+        store
+    }
+
+    /// Перестраивает кэш id→индекс после удаления (индексы сдвигаются).
+    fn rebuild_index(&mut self) {
+        self.index.clear();
+        self.index.reserve(self.entities.len());
+        for (position, entity) in self.entities.iter().enumerate() {
+            self.index.insert(entity.id, position);
+        }
+    }
+
     /// Создаёт существо вида `kind` в позиции `pos` и возвращает его id.
     pub fn spawn(&mut self, kind: EntityKind, pos: WorldPos) -> u64 {
         if self.next_id == 0 {
@@ -447,6 +558,7 @@ impl EntityStore {
         }
         let id = self.next_id;
         self.next_id += 1;
+        self.index.insert(id, self.entities.len());
         self.entities.push(SimEntity::new(id, kind, pos));
         id
     }
@@ -455,19 +567,26 @@ impl EntityStore {
     /// было и удалено; id существ не переиспользуются, поэтому старые
     /// ссылки на удалённое существо просто перестают находиться.
     pub fn remove(&mut self, id: u64) -> bool {
-        let before = self.entities.len();
-        self.entities.retain(|entity| entity.id != id);
-        self.entities.len() != before
+        let Some(position) = self.index.get(&id).copied() else {
+            return false;
+        };
+        self.entities.remove(position);
+        // Удаления редки (смерть/редактор): пересборка индекса O(n) дешевле,
+        // чем сдвиг всех последующих записей на каждом удалении.
+        self.rebuild_index();
+        true
     }
 
-    /// Существо по id.
+    /// Существо по id — O(1) по кэшу индекса.
     pub fn get(&self, id: u64) -> Option<&SimEntity> {
-        self.entities.iter().find(|entity| entity.id == id)
+        let position = *self.index.get(&id)?;
+        self.entities.get(position)
     }
 
-    /// Существо по id (мутабельно).
+    /// Существо по id (мутабельно) — O(1) по кэшу индекса.
     pub fn get_mut(&mut self, id: u64) -> Option<&mut SimEntity> {
-        self.entities.iter_mut().find(|entity| entity.id == id)
+        let position = *self.index.get(&id)?;
+        self.entities.get_mut(position)
     }
 
     /// Переносит существо в точку (перетаскивание колёсиком в редакторе).
@@ -476,7 +595,7 @@ impl EntityStore {
     /// в стояние, чтобы после освобождения существо не продолжило путь к
     /// прежней цели. `false` — существа с таким id нет.
     pub fn move_to(&mut self, id: u64, pos: WorldPos) -> bool {
-        let Some(entity) = self.entities.iter_mut().find(|entity| entity.id == id) else {
+        let Some(entity) = self.get_mut(id) else {
             return false;
         };
         entity.pos = pos;
@@ -519,10 +638,19 @@ impl EntityStore {
         tick: u64,
         terrain: &TerrainView<'_>,
         skip: Option<u64>,
+        land_scratch: &mut LandSearchScratch,
         dead: &mut Vec<u64>,
     ) {
         let side = terrain.side as f32;
         for entity in &mut self.entities {
+            // Возраст тикает у всех, включая захваченное существо. Смерть
+            // от старости — та же смерть, что от голода: дроп и удаление
+            // исполняет вызывающая сторона после обхода.
+            entity.age_ticks = entity.age_ticks.saturating_add(1);
+            if entity.age_ticks >= entity.lifetime_ticks {
+                dead.push(entity.id);
+                continue;
+            }
             // Захваченное существо пропускается до всяких мутаций: его
             // `prev_pos` уже выставил `step_direction` на этом тике.
             if Some(entity.id) == skip {
@@ -565,13 +693,13 @@ impl EntityStore {
             // состоянии, не сжигая обход тайлов каждый тик.
             if !land_search_on_cooldown(entity, tick) {
                 if entity.state != EntityState::Walking && terrain.is_water(entity.pos) {
-                    enter_escape(entity, terrain, tick);
+                    enter_escape(entity, terrain, tick, land_scratch);
                 } else if entity.water_ticks >= WATER_PANIC_TICKS
                     && !terrain.is_land(entity.target)
                 {
                     // Плывём слишком долго — бросаем прежнюю цель и
                     // кратчайшим путём выходим на берег.
-                    enter_escape(entity, terrain, tick);
+                    enter_escape(entity, terrain, tick, land_scratch);
                 }
             }
 
@@ -585,7 +713,7 @@ impl EntityStore {
                     // пойти или лечь, но не наоборот.
                     let mut rng = decision_rng(seed, entity.id, tick);
                     if entity.state == EntityState::Standing {
-                        choose_from_standing(entity, &mut rng, terrain, side, tick);
+                        choose_from_standing(entity, &mut rng, terrain, side, tick, land_scratch);
                     } else {
                         enter_standing(entity, &mut rng);
                     }
@@ -612,7 +740,7 @@ impl EntityStore {
                         // плывёт к прежней цели, пока BFS можно повторить.
                         if terrain.is_water(entity.pos) {
                             if !land_search_on_cooldown(entity, tick) {
-                                enter_escape(entity, terrain, tick);
+                                enter_escape(entity, terrain, tick, land_scratch);
                             }
                         } else {
                             enter_standing(entity, &mut rng);
@@ -634,7 +762,10 @@ impl World {
     /// (брожение, лежание) его не ведёт, ИИ тоже — движение и голод
     /// обеспечивает контроллер.
     pub fn tick_entities(&mut self, tick: u64, player_controlled: Option<u64>) {
-        let mut dead: Vec<u64> = Vec::new();
+        // Буфер умерших переиспользуется между тиками: пустой Vec на каждом
+        // тике — лишняя аллокация при тысячах существ.
+        let mut dead = std::mem::take(&mut self.entity_scratch.dead);
+        dead.clear();
         {
             let World {
                 entities,
@@ -642,6 +773,7 @@ impl World {
                 chunks_per_side,
                 size,
                 seed,
+                land_scratch,
                 ..
             } = self;
             let terrain = TerrainView {
@@ -649,13 +781,22 @@ impl World {
                 chunks_per_side: *chunks_per_side,
                 side: size.tiles() as i32,
             };
-            entities.update(*seed, tick, &terrain, player_controlled, &mut dead);
+            entities.update(
+                *seed,
+                tick,
+                &terrain,
+                player_controlled,
+                land_scratch,
+                &mut dead,
+            );
         }
         // Смерти от голода: лут на землю, существо из мира (нужен мир,
         // поэтому не внутри `update`).
-        for id in dead {
+        for &id in &dead {
             super::combat::kill_entity(self, id, tick);
         }
+        dead.clear();
+        self.entity_scratch.dead = dead;
         // Ответный кусь и убегание волка — после FSM: провокация
         // переопределяет цель обычного поведения.
         self.tick_wolf_provocations(tick);
@@ -893,20 +1034,21 @@ impl World {
     /// Обидчик мёртв или обида забылась — волк спокоен.
     fn tick_wolf_provocations(&mut self, tick: u64) {
         // Снимки позиций до мутаций: заём сущности не должен мешать
-        // менять состояние волка.
-        let positions: Vec<(u64, WorldPos)> = self
-            .entities
-            .iter()
-            .map(|e| (e.id, e.pos))
-            .collect();
-        let provoked: Vec<u64> = self
-            .entities
-            .iter()
-            .filter(|e| e.kind == EntityKind::Wolf && e.provoked_by.is_some())
-            .map(|e| e.id)
-            .collect();
-        let mut killed: Vec<u64> = Vec::new();
-        for id in provoked {
+        // менять состояние волка. Буферы переиспользуются между тиками.
+        let mut positions = std::mem::take(&mut self.ai_scratch.positions);
+        positions.clear();
+        positions.extend(self.entities.iter().map(|e| (e.id, e.pos)));
+        let mut provoked = std::mem::take(&mut self.ai_scratch.provoked);
+        provoked.clear();
+        provoked.extend(
+            self.entities
+                .iter()
+                .filter(|e| e.kind == EntityKind::Wolf && e.provoked_by.is_some())
+                .map(|e| e.id),
+        );
+        let mut killed = std::mem::take(&mut self.ai_scratch.killed);
+        killed.clear();
+        for &id in &provoked {
             let Some(entity) = self.entities.get_mut(id) else {
                 continue;
             };
@@ -918,12 +1060,16 @@ impl World {
             let Some(attacker) = entity.provoked_by else {
                 continue;
             };
-            let Some(attacker_pos) = positions.iter().find(|(aid, _)| *aid == attacker) else {
+            let Some(attacker_pos) = positions
+                .iter()
+                .find(|(aid, _)| *aid == attacker)
+                .map(|(_, pos)| *pos)
+            else {
                 // Обидчика нет в мире (убит/убран) — обида бесполезна.
                 entity.provoked_by = None;
                 continue;
             };
-            let (pos, attacker_pos) = (entity.pos, attacker_pos.1);
+            let (pos, attacker_pos) = (entity.pos, attacker_pos);
             let distance = pos.dist(attacker_pos);
             if distance <= WOLF_BITE_REACH_TILES {
                 // В досягаемости: стоим лицом к обидчику и кусаем по кулдауну.
@@ -972,24 +1118,32 @@ impl World {
             }
         }
         // Обидчик, забитый насмерть: лут и удаление — как в бою.
-        for id in killed {
+        for &id in &killed {
             super::combat::kill_entity(self, id, tick);
         }
+        // Буферы возвращаются в мир с сохранённой ёмкостью.
+        positions.clear();
+        provoked.clear();
+        killed.clear();
+        self.ai_scratch.positions = positions;
+        self.ai_scratch.provoked = provoked;
+        self.ai_scratch.killed = killed;
     }
 }
 
 /// Выбор следующего состояния из стояния: обычно идти, редко лежать.
 fn choose_from_standing(
     entity: &mut SimEntity,
-    rng: &mut StdRng,
+    rng: &mut SplitMix64,
     terrain: &TerrainView<'_>,
     side: f32,
     tick: u64,
+    land_scratch: &mut LandSearchScratch,
 ) {
     // Защита от рассинхрона: стоять в воде нельзя даже один цикл.
     // На кулдауне поиска суши состояние сохраняем — BFS повторится позже.
     if terrain.is_water(entity.pos) && !land_search_on_cooldown(entity, tick) {
-        enter_escape(entity, terrain, tick);
+        enter_escape(entity, terrain, tick, land_scratch);
         return;
     }
     // Поведением человека ведает ИИ (simulation/ai.rs): из стояния FSM
@@ -1000,7 +1154,7 @@ fn choose_from_standing(
     if entity.kind.is_sentient() {
         return;
     }
-    if rng.random::<f32>() < LIE_CHANCE {
+    if rng.next_f32() < LIE_CHANCE {
         enter_lying(entity, rng);
     } else {
         enter_walking(entity, rng, terrain, side);
@@ -1045,7 +1199,7 @@ fn is_grass(kind: Option<TileType>) -> bool {
 /// существо остаётся стоять ещё один цикл.
 fn enter_walking(
     entity: &mut SimEntity,
-    rng: &mut StdRng,
+    rng: &mut SplitMix64,
     terrain: &TerrainView<'_>,
     side: f32,
 ) {
@@ -1061,7 +1215,7 @@ fn enter_walking(
 }
 
 /// Переводит существо в стояние.
-fn enter_standing(entity: &mut SimEntity, rng: &mut StdRng) {
+fn enter_standing(entity: &mut SimEntity, rng: &mut SplitMix64) {
     entity.state = EntityState::Standing;
     entity.state_ticks = 0;
     entity.state_duration = random_duration(rng, STAND_SECS);
@@ -1069,7 +1223,7 @@ fn enter_standing(entity: &mut SimEntity, rng: &mut StdRng) {
 }
 
 /// Переводит существо в лежание.
-fn enter_lying(entity: &mut SimEntity, rng: &mut StdRng) {
+fn enter_lying(entity: &mut SimEntity, rng: &mut SplitMix64) {
     entity.state = EntityState::Lying;
     entity.state_ticks = 0;
     entity.state_duration = random_duration(rng, LIE_SECS);
@@ -1080,8 +1234,13 @@ fn enter_lying(entity: &mut SimEntity, rng: &mut StdRng) {
 /// с запасом на весь путь плюс секунда, чтобы состояние не закончилось
 /// раньше берега. Возвращает `false`, если суши в пределах поиска нет
 /// (неудача запоминается: до `LAND_SEARCH_RETRY_TICKS` BFS не повторяется).
-fn enter_escape(entity: &mut SimEntity, terrain: &TerrainView<'_>, tick: u64) -> bool {
-    let Some(target) = terrain.nearest_land(entity.pos) else {
+fn enter_escape(
+    entity: &mut SimEntity,
+    terrain: &TerrainView<'_>,
+    tick: u64,
+    land_scratch: &mut LandSearchScratch,
+) -> bool {
+    let Some(target) = terrain.nearest_land(entity.pos, land_scratch) else {
         entity.land_search_failed_at = tick;
         return false;
     };
@@ -1110,10 +1269,10 @@ fn land_search_on_cooldown(entity: &SimEntity, tick: u64) -> bool {
 }
 
 /// Случайная длительность состояния в тиках из диапазона секунд.
-fn random_duration(rng: &mut StdRng, secs: (u64, u64)) -> u64 {
+fn random_duration(rng: &mut SplitMix64, secs: (u64, u64)) -> u64 {
     let min = secs.0 * TICKS_PER_SEC as u64;
     let max = secs.1 * TICKS_PER_SEC as u64;
-    min + rng.random_range(0..=(max - min))
+    rng.next_range_inclusive(min, max)
 }
 
 /// Выбирает точку в радиусе брожения, лежащую на проходимом тайле, до
@@ -1123,16 +1282,16 @@ fn random_duration(rng: &mut StdRng, secs: (u64, u64)) -> u64 {
 /// перейти реку, если вокруг неё всё остальное тоже вода или глубоко.
 /// `None` — подходящей точки не нашли.
 fn pick_target(
-    rng: &mut StdRng,
+    rng: &mut SplitMix64,
     from: WorldPos,
     terrain: &TerrainView<'_>,
     side: f32,
 ) -> Option<WorldPos> {
     let mut water_fallback = None;
     for _ in 0..16 {
-        let angle = rng.random::<f32>() * std::f32::consts::TAU;
+        let angle = rng.next_f32() * std::f32::consts::TAU;
         // sqrt делает выбор равномерным по площади круга, а не по радиусу.
-        let radius = WANDER_RADIUS_TILES * rng.random::<f32>().sqrt();
+        let radius = WANDER_RADIUS_TILES * rng.next_f32().sqrt();
         let pos = WorldPos {
             x: (from.x + angle.cos() * radius).clamp(0.0, side),
             y: (from.y + angle.sin() * radius).clamp(0.0, side),
@@ -1204,9 +1363,14 @@ fn decision_seed(world_seed: u64, entity_id: u64, tick: u64) -> u64 {
     x ^ (x >> 31)
 }
 
-/// Новый RNG для одного решения существа.
-fn decision_rng(world_seed: u64, entity_id: u64, tick: u64) -> StdRng {
-    StdRng::seed_from_u64(decision_seed(world_seed, entity_id, tick))
+/// Новый RNG для одного решения существа: splitmix64 вместо `StdRng` —
+/// решений много (тысячи существ × тик), инициализация ChaCha на каждое
+/// была чистой накладной стоимостью (ARCHITECTURE 2.13).
+fn decision_rng(world_seed: u64, entity_id: u64, tick: u64) -> SplitMix64 {
+    SplitMix64::new(mix_seed(
+        decision_seed(world_seed, entity_id, tick),
+        0xD1EC_1510_0000_0001,
+    ))
 }
 
 /// Только читаемый вид рельефа для ИИ существ. Отдельный тип позволяет
@@ -1280,12 +1444,19 @@ impl TerrainView<'_> {
     /// Ближайшая суша от позиции: BFS по проходимой воде, первый берег
     /// в фиксированном порядке соседей. Возвращает центр тайла суши.
     /// `None` — в пределах `LAND_SEARCH_LIMIT` суши нет.
-    fn nearest_land(&self, start: WorldPos) -> Option<WorldPos> {
+    fn nearest_land(
+        &self,
+        start: WorldPos,
+        scratch: &mut LandSearchScratch,
+    ) -> Option<WorldPos> {
         let sx = start.x.floor() as i32;
         let sy = start.y.floor() as i32;
 
-        let mut visited: HashSet<(i32, i32)> = HashSet::new();
-        let mut queue: VecDeque<(i32, i32)> = VecDeque::new();
+        // Буферы переиспользуются между вызовами: BFS в воде — не редкость.
+        let visited = &mut scratch.visited;
+        let queue = &mut scratch.queue;
+        visited.clear();
+        queue.clear();
         visited.insert((sx, sy));
         queue.push_back((sx, sy));
 

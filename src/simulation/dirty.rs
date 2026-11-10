@@ -57,4 +57,20 @@ impl DirtyTiles {
         self.terrain_seen.clear();
         self.decor_seen.clear();
     }
+
+    /// Забирает не больше `max` тайлов канала рельефа, оставляя остальные
+    /// в очереди. Нужно для разрежения пересборок на дальних LOD: рендер
+    /// обрабатывает порцию за окно, а не весь накопленный список разом.
+    /// Порядок не важен — тайлы группируются по блокам при перестройке.
+    pub fn take_terrain_batch(&mut self, max: usize) -> Vec<TilePos> {
+        let take = self.terrain.len().min(max);
+        if take == 0 {
+            return Vec::new();
+        }
+        let batch: Vec<TilePos> = self.terrain.drain(..take).collect();
+        for pos in &batch {
+            self.terrain_seen.remove(pos);
+        }
+        batch
+    }
 }

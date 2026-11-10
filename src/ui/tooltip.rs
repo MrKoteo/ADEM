@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 
+use bevy::picking::hover::Hovered;
 use bevy::picking::Pickable;
 use bevy::prelude::*;
 
@@ -15,7 +16,6 @@ use crate::app::state::{GameMode, GameState, MenuKind};
 use crate::simulation::containers;
 use crate::ui::bottom_panel::{self, PanelAction};
 use crate::simulation::items::{ItemKind, SlotRef, ITEM_KIND_COUNT};
-use crate::ui::cursor_over_node;
 use crate::ui::UiFont;
 use crate::ui::creative::CreativeTile;
 use crate::ui::stations::{SlotIndex, StationPlayerSlot, StationSlot, StationUi};
@@ -36,20 +36,33 @@ impl Plugin for TooltipPlugin {
 
 /// Названия предметов, разложенные по дискриминанту `ItemKind`: вместо
 /// поиска в `HashMap` по строковому id на каждый кадр/тултип — прямой
-/// индекс массива.
+/// индекс массива. `lowercase` — те же названия в нижнем регистре для
+/// поиска в творческом меню: `to_lowercase` на каждый ввод/кадр по 91
+/// предмету был лишней работой в UI-потоке.
 #[derive(Resource, Default)]
 pub struct ItemNames {
     names: Vec<Option<String>>,
+    lowercase: Vec<Option<String>>,
 }
 
 impl ItemNames {
     /// Название предмета. Нет записи в файле — технический id, чтобы
     /// новый предмет не оставался безымянным до правки данных.
-    pub fn name(&self, kind: ItemKind) -> String {
+    /// Возвращается заимствование: тултипы не аллоцируют строку на каждое
+    /// наведение (текст копируется только при фактической смене названия).
+    pub fn name(&self, kind: ItemKind) -> &str {
         self.names
             .get(kind as usize)
-            .and_then(|name| name.clone())
-            .unwrap_or_else(|| kind.id().to_string())
+            .and_then(|name| name.as_deref())
+            .unwrap_or_else(|| kind.id())
+    }
+
+    /// Название в нижнем регистре (кэш для поиска творческого меню).
+    pub fn lower_name(&self, kind: ItemKind) -> &str {
+        self.lowercase
+            .get(kind as usize)
+            .and_then(|name| name.as_deref())
+            .unwrap_or_else(|| kind.id())
     }
 }
 
@@ -70,6 +83,7 @@ struct ItemEntry {
 fn load_item_names(mut commands: Commands) {
     let mut names = ItemNames {
         names: vec![None; ITEM_KIND_COUNT],
+        lowercase: vec![None; ITEM_KIND_COUNT],
     };
     match std::fs::read_to_string("info/items.json")
         .map_err(|e| e.to_string())
@@ -84,6 +98,10 @@ fn load_item_names(mut commands: Commands) {
             let mut loaded = 0;
             for kind in ItemKind::ALL {
                 if let Some(name) = by_id.remove(kind.id()) {
+                    // Поиск творческого меню идёт по предпосчитанному
+                    // нижнему регистру: `to_lowercase` на каждый ввод по
+                    // всем 91 предметам не нужен.
+                    names.lowercase[kind as usize] = Some(name.to_lowercase());
                     names.names[kind as usize] = Some(name);
                     loaded += 1;
                 }
@@ -123,22 +141,17 @@ fn update_tooltip(
     inspector: Res<crate::ui::inspector::InspectorUi>,
     names: Res<ItemNames>,
     font: Res<UiFont>,
-    inv_slots: Query<(
-        &InvSlot,
-        Has<InventoryWindowSlot>,
-        &ComputedNode,
-        &UiGlobalTransform,
-    )>,
-    craft_slots: Query<(&CraftSlot, &ComputedNode, &UiGlobalTransform)>,
-    result_slots: Query<(&ComputedNode, &UiGlobalTransform), With<CraftResultSlot>>,
+    inv_slots: Query<(&InvSlot, Has<InventoryWindowSlot>, &Hovered)>,
+    craft_slots: Query<(&CraftSlot, &Hovered)>,
+    result_slots: Query<&Hovered, With<CraftResultSlot>>,
     // Слоты всех окон и кнопки панели редактора одним параметром-кортежем:
     // у систем Bevy предел в 16 параметров.
     (creative_tiles, station_slots, station_player_slots, inspector_slots, panel_buttons): (
-        Query<(&CreativeTile, &ComputedNode, &UiGlobalTransform)>,
-        Query<(&StationSlot, &ComputedNode, &UiGlobalTransform)>,
-        Query<(&StationPlayerSlot, &SlotIndex, &ComputedNode, &UiGlobalTransform)>,
-        Query<(&crate::ui::inspector::InspectorSlot, &ComputedNode, &UiGlobalTransform)>,
-        Query<(&PanelAction, &ComputedNode, &UiGlobalTransform)>,
+        Query<(&CreativeTile, &Hovered)>,
+        Query<(&StationSlot, &Hovered)>,
+        Query<(&StationPlayerSlot, &SlotIndex, &Hovered)>,
+        Query<(&crate::ui::inspector::InspectorSlot, &Hovered)>,
+        Query<(&PanelAction, &Hovered)>,
     ),
     mut tooltips: Query<(Entity, &mut Node, Option<&Children>), With<TooltipNode>>,
     mut texts: Query<&mut Text>,
@@ -163,8 +176,6 @@ fn update_tooltip(
         return;
     };
     let name = hovered_item_name(
-        window,
-        cursor,
         &state,
         &inv,
         &craft,
@@ -205,7 +216,7 @@ fn update_tooltip(
                     && let Ok(mut t) = texts.get_mut(child)
                     && t.as_str() != name
                 {
-                    **t = name.clone();
+                    **t = name.to_string();
                 }
             }
         }
@@ -246,10 +257,7 @@ fn update_tooltip(
 }
 
 /// Название предмета в слоте под курсором, если такой есть.
-#[allow(clippy::too_many_arguments)]
-fn hovered_item_name(
-    window: &Window,
-    cursor: Vec2,
+fn hovered_item_name<'a>(
     state: &GameState,
     inv: &InventoryUi,
     craft: &CraftingUi,
@@ -257,57 +265,46 @@ fn hovered_item_name(
     mind: Option<&crate::simulation::entities::HumanMind>,
     station: &StationUi,
     inspector_open: Option<u64>,
-    names: &ItemNames,
-    inv_slots: &Query<(
-        &InvSlot,
-        Has<InventoryWindowSlot>,
-        &ComputedNode,
-        &UiGlobalTransform,
-    )>,
-    craft_slots: &Query<(&CraftSlot, &ComputedNode, &UiGlobalTransform)>,
-    result_slots: &Query<(&ComputedNode, &UiGlobalTransform), With<CraftResultSlot>>,
-    creative_tiles: &Query<(&CreativeTile, &ComputedNode, &UiGlobalTransform)>,
-    station_slots: &Query<(&StationSlot, &ComputedNode, &UiGlobalTransform)>,
-    inspector_slots: &Query<(&crate::ui::inspector::InspectorSlot, &ComputedNode, &UiGlobalTransform)>,
-    station_player_slots: &Query<(
-        &StationPlayerSlot,
-        &SlotIndex,
-        &ComputedNode,
-        &UiGlobalTransform,
-    )>,
-    panel_buttons: &Query<(&PanelAction, &ComputedNode, &UiGlobalTransform)>,
-) -> Option<String> {
+    names: &'a ItemNames,
+    inv_slots: &Query<(&InvSlot, Has<InventoryWindowSlot>, &Hovered)>,
+    craft_slots: &Query<(&CraftSlot, &Hovered)>,
+    result_slots: &Query<&Hovered, With<CraftResultSlot>>,
+    creative_tiles: &Query<(&CreativeTile, &Hovered)>,
+    station_slots: &Query<(&StationSlot, &Hovered)>,
+    inspector_slots: &Query<(&crate::ui::inspector::InspectorSlot, &Hovered)>,
+    station_player_slots: &Query<(&StationPlayerSlot, &SlotIndex, &Hovered)>,
+    panel_buttons: &Query<(&PanelAction, &Hovered)>,
+) -> Option<&'a str> {
     if inv.drag.is_some() || station.drag.is_some() {
         return None;
     }
-    let under_cursor = |computed: &ComputedNode, transform: &UiGlobalTransform| -> bool {
-        cursor_over_node(window, computed, transform, cursor)
-    };
+    // Ховер берётся из Bevy picking (`Hovered`): слоты и кнопки уже носят
+    // этот компонент, и он обновляется движком. Ручной хит-тест всех слотов
+    // (в творческом меню — 91 плитки) каждый кадр был самой дорогой частью
+    // тултипов.
 
     // Нижняя панель редактора: названия категорий, инструментов и линз.
     // Панель живёт в наблюдателе (в режиме игрока она скрыта), тултип
-    // не нужен поверх модальных меню. Курсор не на панели — смотрим
-    // остальные источники (окно инспектора тоже работает в наблюдателе).
+    // не нужен поверх модальных меню.
     if state.mode == GameMode::Observer
         && state.active_menu.is_none()
-        && let Some((action, ..)) =
-            panel_buttons.iter().find(|(_, computed, transform)| under_cursor(computed, transform))
+        && let Some((action, _)) = panel_buttons.iter().find(|(_, hovered)| hovered.get())
     {
         // Над кнопкой панели показывается только её название (у плиток
         // времени названия нет — они подписаны сами).
-        return bottom_panel::panel_action_tooltip(action).map(str::to_string);
+        return bottom_panel::panel_action_tooltip(action);
     }
 
     // Окно инспектора: слот показывает название предмета из инвентаря
     // выбранного существа.
     if let Some(id) = inspector_open
-        && let Some(slot) = inspector_slots
+        && let Some((slot, _)) = inspector_slots
             .iter()
-            .find(|(_, computed, transform)| under_cursor(computed, transform))
+            .find(|(_, hovered)| hovered.get())
     {
         let slot_ref = crate::simulation::items::SlotRef {
-            area: slot.0.area,
-            index: slot.0.index,
+            area: slot.area,
+            index: slot.index,
         };
         if let Some(stack) = state
             .world
@@ -323,9 +320,9 @@ fn hovered_item_name(
 
     // Творческое меню: плитка показывает название своего предмета.
     if state.active_menu == Some(MenuKind::Creative) {
-        let (tile, _, _) = creative_tiles
+        let (tile, _) = creative_tiles
             .iter()
-            .find(|(_, computed, transform)| under_cursor(computed, transform))?;
+            .find(|(_, hovered)| hovered.get())?;
         return Some(names.name(tile.kind));
     }
     if state.active_menu.is_some() {
@@ -336,9 +333,9 @@ fn hovered_item_name(
     // занятый — название предмета, как остальные слоты.
     if station.open {
         if let Some(kind) = station.kind
-            && let Some((slot, ..)) = station_slots
+            && let Some((slot, _)) = station_slots
                 .iter()
-                .find(|(_, computed, transform)| under_cursor(computed, transform))
+                .find(|(_, hovered)| hovered.get())
         {
             let stack = state
                 .world
@@ -347,12 +344,12 @@ fn hovered_item_name(
                 .and_then(|container| container.get(slot.index));
             return Some(match stack {
                 Some(stack) => names.name(stack.kind),
-                None => containers::slot_hint(kind, slot.index)?.to_string(),
+                None => containers::slot_hint(kind, slot.index)?,
             });
         }
-        if let Some((_, index, ..)) = station_player_slots
+        if let Some((_, index, _)) = station_player_slots
             .iter()
-            .find(|(_, _, computed, transform)| under_cursor(computed, transform))
+            .find(|(_, _, hovered)| hovered.get())
             && let Some(stack) = mind.and_then(|m| m.inventory.items.get(index.0).copied().flatten())
         {
             return Some(names.name(stack.kind));
@@ -361,14 +358,10 @@ fn hovered_item_name(
     }
 
     let p = mind?;
-    // Слот под курсором: общий хит-тест UI (физические пиксели, как в
-    // пикинге bevy) — тот же, что у остальных проверок курсора.
 
     // Слот результата крафта: название подобранного рецепта.
     if inv.open
-        && result_slots
-            .iter()
-            .any(|(computed, transform)| under_cursor(computed, transform))
+        && result_slots.iter().any(|hovered| hovered.get())
         && let Some(recipe) = book.0.matching_recipe(&craft.slots)
     {
         return Some(names.name(recipe.result.kind));
@@ -378,17 +371,17 @@ fn hovered_item_name(
     if inv.open
         && let Some(stack) = craft_slots
             .iter()
-            .find(|(_, computed, transform)| under_cursor(computed, transform))
-            .and_then(|(slot, _, _)| craft.slots.get(slot.index).copied().flatten())
+            .find(|(_, hovered)| hovered.get())
+            .and_then(|(slot, _)| craft.slots.get(slot.index).copied().flatten())
     {
         return Some(names.name(stack.kind));
     }
 
     // Слоты инвентаря и хотбара (оба носят InvSlot). Слоты окна живут,
     // только пока окно открыто; хотбар виден в режиме игрока — скрытый
-    // (Display::None) хотбар наведение ловить не должен.
-    for (slot, window_slot, computed, transform) in inv_slots {
-        if !under_cursor(computed, transform) {
+    // (Display::None) хотбар picking не подсвечивает.
+    for (slot, window_slot, hovered) in inv_slots {
+        if !hovered.get() {
             continue;
         }
         let visible = if window_slot { inv.open } else { state.mode == GameMode::Player };

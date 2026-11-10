@@ -12,6 +12,9 @@ use std::time::Duration;
 
 use crate::app::audio::AudioPlugin;
 use crate::app::camera::{CameraPlugin, OverlayCamera, WorldCamera};
+use crate::app::generation::{
+    WorldGeneration, poll_world_generation, start_initial_generation,
+};
 use crate::app::input::InputPlugin;
 use crate::app::saves::SavesPlugin;
 use crate::app::settings::{
@@ -27,7 +30,6 @@ use crate::simulation::climate;
 use crate::simulation::combat;
 use crate::simulation::containers;
 use crate::simulation::crops;
-use crate::simulation::generation::generate_world;
 use crate::simulation::scheduler::{Task, TaskKind};
 use crate::simulation::time::{TICKS_PER_SEC, next_hour_tick, next_season_tick, start_tick};
 use crate::simulation::vegetation;
@@ -48,6 +50,7 @@ impl Plugin for AdemPlugin {
             .init_resource::<FocusPause>()
             .init_resource::<CommandQueueRes>()
             .init_resource::<EditorSelection>()
+            .init_resource::<WorldGeneration>()
             .add_message::<TickEvent>()
             .add_plugins(CameraPlugin)
             .add_plugins(RenderingPlugin)
@@ -56,10 +59,11 @@ impl Plugin for AdemPlugin {
             .add_plugins(AudioPlugin)
             .add_plugins(SavesPlugin)
             .add_systems(Startup, (seed_calendar, set_window_icon))
-            .add_systems(PostStartup, generate_initial_world)
+            .add_systems(PostStartup, start_initial_generation)
             .add_systems(
                 Update,
                 (
+                    poll_world_generation.before(SimTick),
                     handle_global_keys,
                     tick_world.in_set(SimTick),
                     // Ввод ставит команды в очередь — применение строго после.
@@ -80,25 +84,12 @@ impl Plugin for AdemPlugin {
     }
 }
 
-/// Сгенерировать стартовый мир по текущим параметрам GameState и запустить
-/// первичные цепочки растительности. Посев идёт от стартового тика часов:
-/// цепочки планируются в будущее относительно момента начала мира.
-fn generate_initial_world(
-    mut state: ResMut<GameState>,
-    clock: Res<ClockRes>,
-    mut sched: ResMut<SchedulerRes>,
-) {
-    let mut world = generate_world(state.world_size, state.seed);
-    world.ambient_temperature_c = climate::ambient_temperature_c(clock.0.tick);
-    vegetation::seed_all(&world, &mut sched.0, clock.0.tick);
-    state.world = Some(world);
-    state.pending_rerender = true;
-}
-
-/// Засевает периодические календарные события при старте.
-/// Дальше их перезапускает tick_world после каждого срабатывания.
-/// Мир начинается утром в 8:00: часы сразу стоят на стартовом тике,
-/// календарные события планируются от него же.
+/// Календарные события мира засеваются при старте; их перезапускает
+/// tick_world после каждого срабатывания. Мир начинается утром в 8:00:
+/// часы сразу стоят на стартовом тике, календарные события планируются
+/// от него же. Стартовая генерация карты идёт в фоновом потоке
+/// (`start_initial_generation`), планировщик нового мира приходит вместе
+/// с ней.
 fn seed_calendar(mut clock: ResMut<ClockRes>, mut sched: ResMut<SchedulerRes>) {
     clock.0.tick = start_tick();
     sched.0.schedule_at(next_hour_tick(clock.0.tick), TaskKind::TimeOfDayChanged);
@@ -162,8 +153,10 @@ fn tick_world(
     mut events: MessageWriter<TickEvent>,
 ) {
     // На паузе тики не генерируются и аккумулятор не растёт (GAME_DESIGN 3.3):
-    // стоит и захваченное существо — оно часть мира.
-    if state.paused || state.world.is_none() {
+    // стоит и захваченное существо — оно часть мира. Пока идёт фоновая
+    // генерация, мир тоже стоит: старый остаётся на экране до подмены,
+    // а новый в это время строится в отдельном потоке.
+    if state.paused || state.generating || state.saving || state.world.is_none() {
         return;
     }
     let (ticks, rest) = step_ticks(

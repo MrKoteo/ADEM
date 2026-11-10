@@ -535,3 +535,53 @@ fn hungry_wolf_hunts_rabbit() {
         "сытый волк не должен начинать охоту"
     );
 }
+
+/// Пол, возраст и индивидуальная продолжительность жизни разыгрываются при
+/// спавне: возраст — 20–80% жизни, сама жизнь — номинал вида ±10%.
+#[test]
+fn spawned_entities_get_age_gender_and_lifespan() {
+    use crate::simulation::entities::{EntityKind, Gender};
+    use crate::simulation::world::WorldPos;
+
+    let mut world = World::new(WorldSize::new(256), 1);
+    let id = world
+        .entities
+        .spawn(EntityKind::Human, WorldPos { x: 10.5, y: 10.5 });
+    let entity = world.entities.get(id).unwrap();
+
+    assert!(matches!(entity.gender, Gender::Male | Gender::Female));
+    let nominal = EntityKind::Human.nominal_lifespan_ticks();
+    assert!(
+        entity.lifetime_ticks >= nominal * 9 / 10 && entity.lifetime_ticks <= nominal * 11 / 10,
+        "продолжительность жизни вне ±10%: {} из {nominal}",
+        entity.lifetime_ticks
+    );
+    assert!(
+        entity.age_ticks >= entity.lifetime_ticks * 2 / 10
+            && entity.age_ticks <= entity.lifetime_ticks * 8 / 10,
+        "стартовый возраст вне 20–80%"
+    );
+    assert!(entity.age_years() <= entity.lifespan_years());
+}
+
+/// Достигнув индивидуальной продолжительности жизни, существо умирает
+/// обычной смертью (удаляется из мира и оставляет лут).
+#[test]
+fn entity_dies_of_old_age() {
+    use crate::simulation::entities::EntityKind;
+    use crate::simulation::world::WorldPos;
+
+    let mut world = World::new(WorldSize::new(256), 1);
+    let id = world
+        .entities
+        .spawn(EntityKind::Rabbit, WorldPos { x: 10.5, y: 10.5 });
+    {
+        let entity = world.entities.get_mut(id).unwrap();
+        entity.age_ticks = entity.lifetime_ticks - 1;
+    }
+    world.tick_entities(1, None);
+    assert!(
+        world.entities.get(id).is_none(),
+        "существо должно умереть от старости"
+    );
+}

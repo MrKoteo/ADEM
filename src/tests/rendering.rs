@@ -58,6 +58,21 @@ fn decor_is_lod_zero_only() {
     assert!(!decor_visible_at(crate::rendering::MAX_LOD));
 }
 
+/// Размер terrain-меша зависит от LOD: L0 — по чанкам 16×16 (правка тайла
+/// не пересобирает весь блок 64×64), L1 — 32×32, L2+ — 64×64. Шаг делит
+/// все размеры мира (кратные 16), поэтому блоки всегда ложатся на сетку.
+#[test]
+fn terrain_block_size_follows_lod() {
+    use crate::rendering::{MAX_BLOCK_TILES, block_tiles_for_lod, MAX_LOD};
+
+    assert_eq!(block_tiles_for_lod(0), 16);
+    assert_eq!(block_tiles_for_lod(1), 32);
+    for lod in 2..=MAX_LOD {
+        assert_eq!(block_tiles_for_lod(lod), MAX_BLOCK_TILES);
+        assert_eq!(MAX_BLOCK_TILES % block_tiles_for_lod(lod), 0);
+    }
+}
+
 /// Счётчик предмета скрывается, когда он меньше четырёх экранных пикселей,
 /// и всегда скрыт при укрупнённом LOD.
 #[test]
@@ -105,10 +120,9 @@ fn block_mesh_quad_count_matches_lod() {
 
     let mesh = build_block_mesh(&world, BlockPos { x: 0, y: 0 }, 0, &tile_uv_table())
         .expect("LOD 0");
-    assert!(mesh.count_vertices() >= 64 * 64 * 4);
-    assert!(
-        mesh.indices().is_some_and(|indices| indices.len() >= 64 * 64 * 6)
-    );
+    // LOD 0 строится по чанкам 16×16: правка пересобирает маленький меш.
+    assert!(mesh.count_vertices() >= 16 * 16 * 4);
+    assert!(mesh.indices().is_some_and(|indices| indices.len() >= 16 * 16 * 6));
 
     let mesh = build_block_mesh(&world, BlockPos { x: 0, y: 0 }, 3, &tile_uv_table())
         .expect("LOD 3");
@@ -160,9 +174,9 @@ fn adjacent_equal_height_tiles_do_not_create_internal_walls() {
     world.set_terrain(TilePos { x: 63, y: 0 }, TileType::Mountain);
     world.set_terrain(TilePos { x: 64, y: 0 }, TileType::Mountain);
 
-    let left = build_block_mesh(&world, BlockPos { x: 0, y: 0 }, 0, &tile_uv_table())
+    let left = build_block_mesh(&world, BlockPos { x: 3, y: 0 }, 0, &tile_uv_table())
         .expect("left mountain");
-    let right = build_block_mesh(&world, BlockPos { x: 1, y: 0 }, 0, &tile_uv_table())
+    let right = build_block_mesh(&world, BlockPos { x: 4, y: 0 }, 0, &tile_uv_table())
         .expect("right mountain");
 
     // Two tops and three visible outside walls; the shared edge crosses a block boundary.
@@ -185,10 +199,15 @@ fn lod_transition_decisions() {
 /// Частичный блок у края мира не читает тайлы за его границей.
 #[test]
 fn block_mesh_handles_partial_edge_block() {
-    // 288 тайлов = 4.5 блока по 64: последний ряд и колонка частичные.
+    // 288 тайлов = 18 блоков по 16 на LOD 0: частичных блоков нет, но
+    // блок у самого края не читает тайлы за границей мира.
     let world = generate_world(WorldSize::new(288), 7);
-    let mesh = build_block_mesh(&world, BlockPos { x: 4, y: 4 }, 0, &tile_uv_table());
-    assert!(mesh.is_some(), "частичный блок должен строиться");
+    let mesh = build_block_mesh(&world, BlockPos { x: 17, y: 17 }, 0, &tile_uv_table());
+    assert!(mesh.is_some(), "блок у края должен строиться");
+    // На LOD 2 блок 64×64 у края мира частичный (288 = 4.5·64) — тоже
+    // строится без выхода за границу.
+    let mesh = build_block_mesh(&world, BlockPos { x: 4, y: 4 }, 2, &tile_uv_table());
+    assert!(mesh.is_some(), "частичный блок LOD 2 должен строиться");
 }
 
 /// Сброс текста поля правит буфер на месте и не трогает настройки виджета:

@@ -199,3 +199,61 @@ fn lazy_need_accumulates_on_demand() {
     assert_eq!(Need::new(50.0, 0.0).ticks_until(30.0), None);
     assert_eq!(Need::new(50.0, 1.0).ticks_until(30.0), None);
 }
+
+/// Календарь: месяц года показывается названием (год начинается с марта).
+#[test]
+fn clock_month_names() {
+    use crate::simulation::time::*;
+
+    let mut c = GameClock::default();
+    assert_eq!(c.month_name(), Month::March);
+    assert_eq!(c.month_name().label(), "Март");
+    // Месяцы идут по кругу: 12 месяцев, затем снова март.
+    c.tick = 9 * TICKS_PER_MONTH;
+    assert_eq!(c.month_name(), Month::December);
+    c.tick = 10 * TICKS_PER_MONTH;
+    assert_eq!(c.month_name(), Month::January);
+    c.tick = TICKS_PER_YEAR;
+    assert_eq!(c.month_name(), Month::March);
+    assert_eq!(Month::from_month(11).label(), "Февраль");
+}
+
+/// Лунный цикл: 16 фаз по 2 суток, старт в третьей фазе, смена фаз — в
+/// полдень (не ночью), полнолуние на седьмой фазе, затем плавное убывание.
+#[test]
+fn moon_phases_advance_every_two_days_at_noon() {
+    use crate::simulation::moon;
+    use crate::simulation::time::{
+        GAME_SECS_PER_TICK, SECS_PER_HOUR, TICKS_PER_DAY, hour_of_tick, start_tick,
+    };
+
+    let start = start_tick();
+    assert_eq!(moon::phase(start), 3);
+    // Первая смена — полдень вторых суток (старт в 8:00 + 2 суток и 4 часа).
+    let phase_ticks = 2 * TICKS_PER_DAY;
+    let first_change = start + phase_ticks + 4 * SECS_PER_HOUR / GAME_SECS_PER_TICK as u64;
+    assert_eq!(hour_of_tick(first_change), 12);
+    assert_eq!(moon::phase(first_change - 1), 3);
+    assert_eq!(moon::phase(first_change), 4);
+    // Днём яркость меняется, ночью — нет.
+    assert_eq!(hour_of_tick(first_change + TICKS_PER_DAY / 2), 0);
+    assert_eq!(moon::phase(first_change + TICKS_PER_DAY / 2), 4);
+
+    let full = first_change + 3 * phase_ticks;
+    assert_eq!(moon::phase(full), 7);
+    assert!((moon::night_daylight(full) - 0.24).abs() < f32::EPSILON);
+    // После полнолуния — плавное убывание, а не резкое новолуние.
+    assert_eq!(moon::phase(full + phase_ticks), 8);
+    assert!((moon::night_daylight(full + phase_ticks) - 0.21).abs() < f32::EPSILON);
+    assert_eq!(moon::phase(full - phase_ticks), 6);
+    assert!((moon::night_daylight(full - phase_ticks) - 0.21).abs() < f32::EPSILON);
+    // Полный лунный цикл — 16 фаз * 2 суток: полнолуние повторяется.
+    assert_eq!(moon::phase(full + 16 * phase_ticks), 7);
+    // Новолуние в конце убывания.
+    assert_eq!(moon::phase(full + 9 * phase_ticks), 0);
+    assert!((moon::night_daylight(full + 9 * phase_ticks) - 0.03).abs() < f32::EPSILON);
+
+    assert_eq!(moon::phase_label(0), "Новолуние");
+    assert_eq!(moon::phase_label(7), "Полнолуние");
+    assert_eq!(moon::phase_label(8), "Спадающая луна");
+}

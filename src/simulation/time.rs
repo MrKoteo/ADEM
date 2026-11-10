@@ -3,7 +3,7 @@
 
 /// Тиков симуляции в реальную секунду (скорость x1).
 pub const TICKS_PER_SEC: u32 = 20;
-/// Игровых секунд в одном тике (1 тик = 12 игровых секунд, GAME_DESIGN 3.3).
+/// Игровых секунд в одном тике (1 тик = 12 игровых секунд, согласно GAME_DESIGN).
 pub const GAME_SECS_PER_TICK: u32 = 12;
 
 pub const SECS_PER_MIN: u32 = 60;
@@ -44,12 +44,69 @@ impl Season {
     }
 
     /// Название сезона для UI.
+    #[allow(dead_code)] // сезон показывается в будущем UI; сейчас в дате — месяц
     pub fn label(self) -> &'static str {
         match self {
             Season::Spring => "Весна",
             Season::Summer => "Лето",
             Season::Autumn => "Осень",
             Season::Winter => "Зима",
+        }
+    }
+}
+
+/// Месяц года. Индекс 0 — март: год начинается с весны, как и календарь
+/// мира (`Season::from_month` и `climate::MONTH_BASE_TEMP_C`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Month {
+    March,
+    April,
+    May,
+    June,
+    July,
+    August,
+    September,
+    October,
+    November,
+    December,
+    January,
+    February,
+}
+
+impl Month {
+    /// Месяц по номеру месяца года (0..11): 0 — март, 11 — февраль.
+    pub fn from_month(month: u32) -> Self {
+        match month % MONTHS_PER_YEAR {
+            0 => Month::March,
+            1 => Month::April,
+            2 => Month::May,
+            3 => Month::June,
+            4 => Month::July,
+            5 => Month::August,
+            6 => Month::September,
+            7 => Month::October,
+            8 => Month::November,
+            9 => Month::December,
+            10 => Month::January,
+            _ => Month::February,
+        }
+    }
+
+    /// Название месяца для UI.
+    pub fn label(self) -> &'static str {
+        match self {
+            Month::March => "Март",
+            Month::April => "Апрель",
+            Month::May => "Май",
+            Month::June => "Июнь",
+            Month::July => "Июль",
+            Month::August => "Август",
+            Month::September => "Сентябрь",
+            Month::October => "Октябрь",
+            Month::November => "Ноябрь",
+            Month::December => "Декабрь",
+            Month::January => "Январь",
+            Month::February => "Февраль",
         }
     }
 }
@@ -99,8 +156,14 @@ impl GameClock {
     }
 
     /// Текущий сезон.
+    #[allow(dead_code)] // используется тестами; в дате UI показывается месяц
     pub fn season(&self) -> Season {
         Season::from_month(self.month_of_year())
+    }
+
+    /// Текущий месяц года.
+    pub fn month_name(&self) -> Month {
+        Month::from_month(self.month_of_year())
     }
 
     /// Доля суток [0, 1). Используется освещением (rendering/lighting).

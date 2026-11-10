@@ -40,7 +40,7 @@ fn terrain_tints_follow_chunk_boundaries_without_changing_geometry() {
     mesh.insert_indices(bevy::mesh::Indices::U32(vec![0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7]));
     let tints = HashMap::from([(ChunkPos { x: 0, y: 0 }, [0.4, 0.6, 0.8, 1.0])]);
 
-    set_block_lens_colors(&mut mesh, BlockPos { x: 0, y: 0 }, &tints);
+    set_block_lens_colors(&mut mesh, BlockPos { x: 0, y: 0 }, 16, &tints);
 
     let actual_positions = mesh
         .attribute(Mesh::ATTRIBUTE_POSITION)
