@@ -3,6 +3,7 @@
 //! должен совпадать с порядком чтения `read.rs` до байта.
 
 use crate::simulation::chunk::TerrainTiles;
+use crate::simulation::heightmap::Heightmap;
 use crate::simulation::entities::{EntityStore, HumanMind};
 use crate::simulation::items::{ItemStack, MISC_SLOTS};
 use crate::simulation::objects::WorldObject;
@@ -48,6 +49,7 @@ pub fn save_game(
                 }
             }
         }
+        write_heightmap(&mut w, &chunk.heights);
         write_sparse_u16(&mut w, &chunk.resources, |d| (d.kind as u8, d.amount));
         write_sparse_objects(&mut w, &chunk.objects);
         write_sparse_items(&mut w, &chunk.items);
@@ -353,6 +355,25 @@ fn write_task_kind(w: &mut Vec<u8>, kind: &TaskKind) {
         }
     }
 }
+/// Записывает слой высот: тег Uniform/Packed, заголовок и упакованные
+/// дельты. Порядок байт слов — little-endian, как у всего формата.
+fn write_heightmap(w: &mut Vec<u8>, heights: &Heightmap) {
+    match heights {
+        Heightmap::Uniform(height) => {
+            w.push(0);
+            write_u16(w, *height);
+        }
+        Heightmap::Packed(packed) => {
+            w.push(1);
+            write_u16(w, packed.min);
+            w.push(packed.bits);
+            for word in packed.words.iter() {
+                write_u64(w, *word);
+            }
+        }
+    }
+}
+
 fn write_u32(w: &mut Vec<u8>, value: u32) {
     w.extend_from_slice(&value.to_le_bytes());
 }

@@ -24,6 +24,7 @@ use rand::{RngExt, SeedableRng}; // Bevy 0.20 / rand 0.10: RngExt вместо R
 
 use super::entities::EntityKind;
 use super::chunk::{ResourceDeposit, TerrainTiles, CHUNK_SIZE, CHUNK_TILES};
+use super::heightmap::{Heightmap, HEIGHT_MAX, SEA_LEVEL};
 use super::objects::WorldObject;
 use super::world::WorldPos;
 use super::tile::{ResourceKind, TileType};
@@ -40,6 +41,21 @@ const ELEV_BEACH: f32 = 0.44;
 
 /// Минимальная высота истока реки: реки рождаются на возвышенностях.
 const ELEV_RIVER_SOURCE: f32 = 0.55;
+
+/// Опорные точки перевода шумовой высоты `[0, 1]` в высоты слоя.
+///
+/// Диапазон 0..4095 общий для всех карт: маленькая карта не «растягивает»
+/// свой рельеф до гор, а просто не достигает высоких отметок. Море — 256,
+/// камень начинается выше 640, горы — выше 1280. Пороги по `elevation`
+/// согласованы с `terrain_kind_for`, чтобы вид тайла и высота не спорили.
+const HEIGHT_STOPS: [(f32, f32); 6] = [
+    (0.0, 0.0),
+    (ELEV_SEA, SEA_LEVEL as f32),
+    (0.50, 640.0),
+    (0.56, 1280.0),
+    (0.70, 2560.0),
+    (1.0, HEIGHT_MAX as f32),
+];
 
 /// Масштаб континентального шума, тайлов на клетку: задаёт размер
 /// материков и крупных островов.
@@ -148,6 +164,23 @@ fn smoothstep(t: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
+/// Переводит шумовую высоту тайла в единицы слоя высот (0..4095).
+/// Кусочно-линейная кривая по `HEIGHT_STOPS`: море 256, камень от 640,
+/// горы от 1280. Непрерывна, поэтому на границах полос нет скачков.
+pub(crate) fn height_for_elevation(elevation: f32) -> u16 {
+    let elevation = elevation.clamp(0.0, 1.0);
+    for pair in HEIGHT_STOPS.windows(2) {
+        let (e0, h0) = pair[0];
+        let (e1, h1) = pair[1];
+        if elevation <= e1 {
+            let t = if e1 > e0 { (elevation - e0) / (e1 - e0) } else { 0.0 };
+            let height = h0 + (h1 - h0) * t;
+            return height.round().clamp(0.0, HEIGHT_MAX as f32) as u16;
+        }
+    }
+    HEIGHT_MAX
+}
+
 /// Высота тайла в [0, 1]: континентальный шум, искривлённый domain warp'ом
 /// и умноженный на спад к краям карты. Спад прижимает воду к границам —
 /// карта читается как континенты и острова, а не обрезанный прямоугольник.
@@ -251,6 +284,7 @@ pub fn generate_world_cancellable(
         for cx in 0..chunks_per_side {
             let chunk_index = cy * chunks_per_side + cx;
             let mut tiles = [TileType::Empty; CHUNK_TILES];
+            let mut heights = [0_u16; CHUNK_TILES];
             let chunk = &mut world.chunks[chunk_index];
             for ly in 0..CHUNK_SIZE {
                 let y = (cy * CHUNK_SIZE + ly) as i32;
@@ -261,6 +295,7 @@ pub fn generate_world_cancellable(
                     let moisture = moisture_at(x, y, seed);
                     let mut kind = terrain_kind_for(elevation, ridge, moisture);
                     let idx = ly * CHUNK_SIZE + lx;
+                    heights[idx] = height_for_elevation(elevation);
                     match kind {
                         TileType::Stone if rng.random::<f32>() < 0.10 => {
                             chunk.resources.insert(
@@ -291,6 +326,7 @@ pub fn generate_world_cancellable(
                 }
             }
             chunk.terrain = TerrainTiles::Full(Box::new(tiles));
+            chunk.heights = Heightmap::from_tiles(&heights);
         }
     }
 
@@ -369,6 +405,7 @@ pub fn generate_world_cancellable(
             return None;
         }
         chunk.terrain.try_compress();
+        chunk.heights.try_compress();
     }
 
     Some(world)
@@ -496,9 +533,10 @@ impl BitGrid {
 }
 
 /// Размечает водоёмы по соединённости. Вода, достижимая от границы мира,
-/// — море: глубины остаются как сгенерированы. Остальная вода — озёра:
-/// «океаническая» глубина понижается до глубокой воды. Обходы детерминиро-
-/// ваны: BFS с очередью и фиксированным порядком соседей.
+/// — море: высота выравнивается по уровню моря. Остальная вода — озёра:
+/// «океаническая» глубина понижается до глубокой воды, а высота озера
+/// выравнивается по его локальному уровню (максимум воды в регионе).
+/// Обходы детерминированы: BFS с очередью и фиксированным порядком соседей.
 fn classify_water(world: &mut World, cancelled: &dyn Fn() -> bool) -> bool {
     let n = world.size.tiles() as i32;
     let mut grid = BitGrid::new(n as u32);
@@ -520,6 +558,8 @@ fn classify_water(world: &mut World, cancelled: &dyn Fn() -> bool) -> bool {
                 let idx = grid.index(pos.x, pos.y);
                 if !grid.get(idx) {
                     grid.set(idx);
+                    // Море плоское: все его тайлы — на уровне моря.
+                    world.set_height(pos, SEA_LEVEL);
                     queue.push_back(idx);
                 }
             }
@@ -546,6 +586,7 @@ fn classify_water(world: &mut World, cancelled: &dyn Fn() -> bool) -> bool {
             let next = grid.index(nx, ny);
             if !grid.get(next) {
                 grid.set(next);
+                world.set_height(TilePos { x: nx, y: ny }, SEA_LEVEL);
                 queue.push_back(next);
             }
         }
@@ -596,11 +637,19 @@ fn classify_water(world: &mut World, cancelled: &dyn Fn() -> bool) -> bool {
                 world.set_terrain(pos, TileType::Sand);
             }
         } else {
-            // Озеро: «океанической» глубины в нём не бывает.
+            // Озеро: «океанической» глубины в нём не бывает. Вода в озере
+            // плоская на локальном уровне — по самой высокой воде региона
+            // (около точки перелива), а не по глобальному уровню моря.
+            let level = region
+                .iter()
+                .filter_map(|pos| world.height(*pos))
+                .max()
+                .unwrap_or(SEA_LEVEL);
             for pos in region {
                 if world.terrain_kind(pos) == TileType::Ocean {
                     world.set_terrain(pos, TileType::DeepWater);
                 }
+                world.set_height(pos, level);
             }
         }
     }

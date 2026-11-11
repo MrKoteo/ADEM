@@ -14,6 +14,7 @@ pub mod crops;
 pub mod dirty;
 pub mod entities;
 pub mod generation;
+pub mod heightmap;
 pub mod hunger;
 pub mod item_entity;
 pub mod items;
@@ -35,6 +36,8 @@ pub mod armor;
 pub use armor::{ARMOR_RATING_MAX, protection_of, rating as armor_rating, reduce_damage};
 #[allow(unused_imports)]
 pub use chunk::{Chunk, TerrainTiles, CHUNK_SIZE, CHUNK_TILES};
+#[allow(unused_imports)]
+pub use heightmap::{Heightmap, HEIGHT_MAX, SEA_LEVEL};
 #[allow(unused_imports)]
 pub use clothes::{WARMTH_MAX, warmth, warmth_of};
 #[allow(unused_imports)]

@@ -330,3 +330,64 @@ fn generated_apple_trees_have_four_to_ten_fruits() {
     }
     assert!(found > 0, "на карте нет яблонь");
 }
+
+// --- Слой высот ---
+
+/// Кривая высот согласована с полосами рельефа: море 256, камень от 640,
+/// горы от 1280, верх диапазона 4095.
+#[test]
+fn height_curve_matches_terrain_bands() {
+    use crate::simulation::generation::height_for_elevation;
+    use crate::simulation::heightmap::{HEIGHT_MAX, SEA_LEVEL};
+
+    assert_eq!(height_for_elevation(0.42), SEA_LEVEL);
+    assert_eq!(height_for_elevation(0.50), 640);
+    assert_eq!(height_for_elevation(0.56), 1280);
+    assert_eq!(height_for_elevation(1.0), HEIGHT_MAX);
+    assert_eq!(height_for_elevation(0.0), 0);
+    // Кривая монотонна и не выходит за диапазон.
+    let mut previous = 0;
+    for step in 0..=1000 {
+        let height = height_for_elevation(step as f32 / 1000.0);
+        assert!(height >= previous);
+        assert!(height <= HEIGHT_MAX);
+        previous = height;
+    }
+}
+
+/// Высоты всех тайлов лежат в диапазоне, а типы рельефа не противоречат
+/// высоте: море плоское, камень и горы — в своих полосах.
+#[test]
+fn generated_heights_fit_terrain_types() {
+    use crate::simulation::heightmap::{HEIGHT_MAX, SEA_LEVEL};
+
+    let world = generate_world(WorldSize::new(256), 999);
+    let mut ocean_count = 0;
+    for y in 0..world.size.tiles() as i32 {
+        for x in 0..world.size.tiles() as i32 {
+            let pos = TilePos { x, y };
+            let height = world.height(pos).expect("тайл внутри мира");
+            assert!(height <= HEIGHT_MAX);
+            match world.terrain_kind(pos) {
+                TileType::Ocean => {
+                    ocean_count += 1;
+                    assert_eq!(height, SEA_LEVEL, "океан должен быть плоским");
+                }
+                TileType::Stone => assert!(height >= 640, "камень ниже 640: {height}"),
+                TileType::Mountain => assert!(height >= 1280, "гора ниже 1280: {height}"),
+                TileType::Sand => assert!(height >= SEA_LEVEL - 16, "пляж ниже моря"),
+                _ => {}
+            }
+        }
+    }
+    assert!(ocean_count > 0, "на карте нет океана");
+}
+
+/// Высоты участвуют в детерминизме: два мира с одним seed совпадают
+/// полностью, включая слой высот.
+#[test]
+fn generated_heights_are_deterministic() {
+    let first = generate_world(WorldSize::new(256), 12345);
+    let second = generate_world(WorldSize::new(256), 12345);
+    assert_eq!(first.chunks, second.chunks);
+}

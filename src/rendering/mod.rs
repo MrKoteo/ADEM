@@ -61,6 +61,7 @@ impl Plugin for RenderingPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins((
             MaterialPlugin::<terrain::TerrainMaterial>::default(),
+            MaterialPlugin::<terrain::TerrainShadeMaterial>::default(),
             Material2dPlugin::<lighting::DarknessMaterial>::default(),
         ))
             .add_systems(PreStartup, textures::load_game_textures)

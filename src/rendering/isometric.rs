@@ -2,35 +2,44 @@ use bevy::camera::Camera;
 use bevy::math::{Vec2, Vec3};
 use bevy::prelude::GlobalTransform;
 
+use crate::simulation::heightmap::{HEIGHT_MAX, SEA_LEVEL};
 use crate::simulation::{TilePos, TileType, World, TILE_SIZE};
 
 /// Grid spacing is tuned so a 30°-above-horizon, 45° azimuth camera
 /// reproduces the previous 2:1 isometric diamond.
 pub(crate) const WORLD_TILE_SIZE: f32 = TILE_SIZE * std::f32::consts::SQRT_2;
-const HEIGHT_STEP: f32 = TILE_SIZE * 0.125 / 0.866_025_4;
 
-pub(crate) fn tile_elevation(kind: TileType) -> f32 {
-    let levels = match kind {
-        TileType::Empty
-        | TileType::Water
-        | TileType::DeepWater
-        | TileType::Ocean
-        | TileType::Sand => 0.0,
-        TileType::Dirt | TileType::Grass | TileType::Farmland | TileType::Clay => 1.0,
-        TileType::Mud | TileType::Podzol => 1.0,
-        TileType::ForestGrass | TileType::Moss => 1.5,
-        TileType::Stone => 3.0,
-        TileType::Mountain => 8.0,
-    };
-    levels * HEIGHT_STEP
+/// Мировые единицы на один уровень высоты. Диапазон 0..4095 даёт ~409.5
+/// юнита (25.6 тайла) полной амплитуды; данные моря — 256 уровней,
+/// рендерятся как 255 (25.5 юнита) из-за шага `HEIGHT_RENDER_STEP`.
+pub(crate) const HEIGHT_WORLD_UNIT: f32 = TILE_SIZE / 160.0;
+
+/// Минимальный шаг высоты для рендера, уровней. 10 уровней = 1 мировой
+/// юнит = 1 тексель при масштабе 1:1, поэтому 5 уровней — 0.5 текселя.
+/// Более мелкие перепады не различимы и не должны порождать отдельные
+/// стенки/полоски. Данные симуляции при этом остаются точными.
+pub(crate) const HEIGHT_RENDER_STEP: u16 = 5;
+
+/// Верхняя граница рельефа в мировых единицах (для отсечения блоков).
+pub(crate) const MAX_WORLD_HEIGHT: f32 = HEIGHT_MAX as f32 * HEIGHT_WORLD_UNIT;
+
+/// Плоскость вне мира: уровень моря, чтобы у края карты не было обрыва.
+pub(crate) const SEA_WORLD_HEIGHT: f32 =
+    (SEA_LEVEL / HEIGHT_RENDER_STEP * HEIGHT_RENDER_STEP) as f32 * HEIGHT_WORLD_UNIT;
+
+/// Высота слоя в мировых единицах с шагом рендера. Все потребители —
+/// меш, пикинг, спрайты, камера — обязаны использовать эту функцию,
+/// иначе объекты «поплывут» относительно поверхности.
+#[inline]
+pub(crate) fn height_to_world(level: u16) -> f32 {
+    let snapped = level / HEIGHT_RENDER_STEP * HEIGHT_RENDER_STEP;
+    snapped as f32 * HEIGHT_WORLD_UNIT
 }
 
+/// Высота поверхности тайла в мировых единицах. За пределами мира —
+/// уровень моря (там всегда океан).
 pub(crate) fn terrain_elevation(world: &World, tile: TilePos) -> f32 {
-    let size = world.size.tiles() as i32;
-    if tile.x < 0 || tile.y < 0 || tile.x >= size || tile.y >= size {
-        return 0.0;
-    }
-    tile_elevation(world.terrain_kind(tile))
+    height_to_world(world.height_or(tile, SEA_LEVEL))
 }
 
 pub(crate) fn world_position(world: &World, grid: Vec2) -> Vec3 {
@@ -71,97 +80,250 @@ struct TerrainHit {
     tile: TilePos,
 }
 
+/// Допуск при сравнении t и координат: лучи из ортокамеры почти всегда
+/// попадают в общую границу тайлов, а не в середину.
+const PICK_EPS: f32 = 1e-4;
+
+/// Пересечение луча с рельефом (ступени + стенки).
+///
+/// Высоты ограничены `[0, MAX_WORLD_HEIGHT]`, поэтому луч может пересечь
+/// рельеф только на коротком участке: при наклоне камеры 30° это ~36 тайлов
+/// независимо от размера мира. DDA идёт по тайлам этого участка и проверяет
+/// верхнюю плоскость и две видимые стенки (−X/−Y) каждого тайла.
 fn intersect_terrain(origin: Vec3, direction: Vec3, world: &World) -> Option<TerrainHit> {
     if direction.z.abs() < f32::EPSILON {
         return None;
     }
-    let mut nearest: Option<(f32, Vec3, TilePos)> = None;
-    // Уровни высот тайлов (`tile_elevation` до умножения на HEIGHT_STEP);
-    // лесная трава и мох — полууровень 1.5. Новый вид рельефа с другой
-    // высотой требует добавления сюда.
-    for level in [0.0, 1.0, 1.5, 2.0, 3.0, 8.0] {
-        let height = level * HEIGHT_STEP;
-        let distance = (height - origin.z) / direction.z;
-        if distance < 0.0 {
-            continue;
+    let side_tiles = world.size.tiles() as i32;
+    let side = side_tiles as f32 * WORLD_TILE_SIZE;
+
+    // Интервал t, где луч находится в высотном слое [0, MAX].
+    let (layer_start, layer_end) = if direction.z < 0.0 {
+        (
+            (MAX_WORLD_HEIGHT - origin.z) / direction.z,
+            (0.0 - origin.z) / direction.z,
+        )
+    } else {
+        (
+            (0.0 - origin.z) / direction.z,
+            (MAX_WORLD_HEIGHT - origin.z) / direction.z,
+        )
+    };
+    let mut t_start = layer_start.max(0.0);
+    let mut t_end = layer_end;
+    if t_end <= t_start {
+        return base_plane_hit(origin, direction);
+    }
+
+    // Ограничиваем участок горизонтальными границами мира.
+    let Some((x0, x1)) = axis_interval(origin.x, direction.x, 0.0, side) else {
+        return base_plane_hit(origin, direction);
+    };
+    let Some((y0, y1)) = axis_interval(origin.y, direction.y, 0.0, side) else {
+        return base_plane_hit(origin, direction);
+    };
+    t_start = t_start.max(x0).max(y0);
+    t_end = t_end.min(x1).min(y1);
+    if t_end <= t_start + PICK_EPS {
+        return base_plane_hit(origin, direction);
+    }
+
+    let start_point = origin + direction * t_start;
+    let mut gx = (start_point.x / WORLD_TILE_SIZE).floor() as i32;
+    let mut gy = (start_point.y / WORLD_TILE_SIZE).floor() as i32;
+    gx = gx.clamp(0, side_tiles - 1);
+    gy = gy.clamp(0, side_tiles - 1);
+
+    let step_x = if direction.x > PICK_EPS {
+        1
+    } else if direction.x < -PICK_EPS {
+        -1
+    } else {
+        0
+    };
+    let step_y = if direction.y > PICK_EPS {
+        1
+    } else if direction.y < -PICK_EPS {
+        -1
+    } else {
+        0
+    };
+    let t_delta_x = if step_x == 0 {
+        f32::INFINITY
+    } else {
+        WORLD_TILE_SIZE / direction.x.abs()
+    };
+    let t_delta_y = if step_y == 0 {
+        f32::INFINITY
+    } else {
+        WORLD_TILE_SIZE / direction.y.abs()
+    };
+    let next_x = if step_x > 0 {
+        (gx + 1) as f32 * WORLD_TILE_SIZE
+    } else {
+        gx as f32 * WORLD_TILE_SIZE
+    };
+    let next_y = if step_y > 0 {
+        (gy + 1) as f32 * WORLD_TILE_SIZE
+    } else {
+        gy as f32 * WORLD_TILE_SIZE
+    };
+    let mut t_max_x = if step_x == 0 {
+        f32::INFINITY
+    } else {
+        (next_x - origin.x) / direction.x
+    };
+    let mut t_max_y = if step_y == 0 {
+        f32::INFINITY
+    } else {
+        (next_y - origin.y) / direction.y
+    };
+    t_max_x = t_max_x.max(t_start);
+    t_max_y = t_max_y.max(t_start);
+
+    let mut best: Option<(f32, Vec3, TilePos)> = None;
+    let mut t = t_start;
+    while t <= t_end + PICK_EPS {
+        if gx < 0 || gy < 0 || gx >= side_tiles || gy >= side_tiles {
+            break;
         }
+        let tile = TilePos { x: gx, y: gy };
+        let cell_exit = t_max_x.min(t_max_y).min(t_end);
+        // Пустой тайл не рисуется; его стенки никому не принадлежат.
+        if world.terrain_kind(tile) != TileType::Empty
+            && let Some((hit_distance, hit_point)) =
+                tile_surface_hit(origin, direction, world, tile, t, cell_exit)
+            && best.is_none_or(|(best_distance, _, _)| hit_distance < best_distance)
+        {
+            best = Some((hit_distance, hit_point, tile));
+        }
+
+        if t_max_x <= t_max_y {
+            if step_x == 0 {
+                break;
+            }
+            gx += step_x;
+            t = t_max_x;
+            t_max_x += t_delta_x;
+        } else {
+            if step_y == 0 {
+                break;
+            }
+            gy += step_y;
+            t = t_max_y;
+            t_max_y += t_delta_y;
+        }
+    }
+
+    let (_, point, tile) = best?;
+    Some(TerrainHit { point, tile })
+}
+
+/// Пересечение луча с поверхностью одного тайла: верхняя плоскость и две
+/// стенки, которые реально строит меш (−X и −Y).
+fn tile_surface_hit(
+    origin: Vec3,
+    direction: Vec3,
+    world: &World,
+    tile: TilePos,
+    t_enter: f32,
+    t_exit: f32,
+) -> Option<(f32, Vec3)> {
+    let x0 = tile.x as f32 * WORLD_TILE_SIZE;
+    let y0 = tile.y as f32 * WORLD_TILE_SIZE;
+    let x1 = x0 + WORLD_TILE_SIZE;
+    let y1 = y0 + WORLD_TILE_SIZE;
+    let elevation = terrain_elevation(world, tile);
+    let mut best: Option<(f32, Vec3)> = None;
+
+    // Верхняя плоскость.
+    let distance = (elevation - origin.z) / direction.z;
+    if distance >= t_enter - PICK_EPS && distance <= t_exit + PICK_EPS {
         let point = origin + direction * distance;
-        let tile = TilePos {
+        if point.x >= x0 - PICK_EPS
+            && point.x <= x1 + PICK_EPS
+            && point.y >= y0 - PICK_EPS
+            && point.y <= y1 + PICK_EPS
+        {
+            best = Some((distance, point));
+        }
+    }
+
+    // Стенка −X: есть, если сосед слева ниже. У края мира сосед — море.
+    let left = if tile.x > 0 {
+        terrain_elevation(world, TilePos { x: tile.x - 1, y: tile.y })
+    } else {
+        SEA_WORLD_HEIGHT
+    };
+    if elevation > left + PICK_EPS && direction.x.abs() > PICK_EPS {
+        let distance = (x0 - origin.x) / direction.x;
+        if distance >= t_enter - PICK_EPS && distance <= t_exit + PICK_EPS {
+            let point = origin + direction * distance;
+            if point.y >= y0 - PICK_EPS
+                && point.y <= y1 + PICK_EPS
+                && point.z >= left - PICK_EPS
+                && point.z <= elevation + PICK_EPS
+                && best.is_none_or(|(best_distance, _)| distance < best_distance)
+            {
+                best = Some((distance, point));
+            }
+        }
+    }
+
+    // Стенка −Y.
+    let up = if tile.y > 0 {
+        terrain_elevation(world, TilePos { x: tile.x, y: tile.y - 1 })
+    } else {
+        SEA_WORLD_HEIGHT
+    };
+    if elevation > up + PICK_EPS && direction.y.abs() > PICK_EPS {
+        let distance = (y0 - origin.y) / direction.y;
+        if distance >= t_enter - PICK_EPS && distance <= t_exit + PICK_EPS {
+            let point = origin + direction * distance;
+            if point.x >= x0 - PICK_EPS
+                && point.x <= x1 + PICK_EPS
+                && point.z >= up - PICK_EPS
+                && point.z <= elevation + PICK_EPS
+                && best.is_none_or(|(best_distance, _)| distance < best_distance)
+            {
+                best = Some((distance, point));
+            }
+        }
+    }
+
+    best
+}
+
+/// Интервал t, на котором координата луча остаётся в `[min, max]`.
+/// Для неподвижной оси — вся числовая прямая, если origin внутри полосы.
+fn axis_interval(origin: f32, direction: f32, min: f32, max: f32) -> Option<(f32, f32)> {
+    if direction.abs() < PICK_EPS {
+        if origin >= min && origin <= max {
+            return Some((f32::NEG_INFINITY, f32::INFINITY));
+        }
+        return None;
+    }
+    let a = (min - origin) / direction;
+    let b = (max - origin) / direction;
+    Some((a.min(b), a.max(b)))
+}
+
+/// Резервное попадание вне мира/при отсутствии рельефа — плоскость моря.
+fn base_plane_hit(origin: Vec3, direction: Vec3) -> Option<TerrainHit> {
+    if direction.z.abs() < f32::EPSILON {
+        return None;
+    }
+    let distance = (SEA_WORLD_HEIGHT - origin.z) / direction.z;
+    if distance < 0.0 {
+        return None;
+    }
+    let point = origin + direction * distance;
+    Some(TerrainHit {
+        point,
+        tile: TilePos {
             x: (point.x / WORLD_TILE_SIZE).floor() as i32,
             y: (point.y / WORLD_TILE_SIZE).floor() as i32,
-        };
-        if (terrain_elevation(world, tile) - height).abs() <= f32::EPSILON
-            && nearest.is_none_or(|(best_distance, _, _)| distance < best_distance)
-        {
-            nearest = Some((distance, point, tile));
-        }
-    }
-    let (top_distance, top_point, top_tile) = nearest?;
-
-    // Проверяем боковые грани рядом с первым попаданием в горизонтальную
-    // поверхность. При фиксированном наклоне камеры высота горы ограничивает
-    // этот участок несколькими тайлами, поэтому не требуется обходить мир.
-    let side_reach = (tile_elevation(TileType::Mountain) * direction.truncate().length()
-        / direction.z.abs() / WORLD_TILE_SIZE).ceil() as i32 + 1;
-    let center = TilePos {
-        x: (top_point.x / WORLD_TILE_SIZE).floor() as i32,
-        y: (top_point.y / WORLD_TILE_SIZE).floor() as i32,
-    };
-    let size = world.size.tiles() as i32;
-    let mut best = (top_distance, top_point, top_tile);
-    let epsilon = 1e-4;
-
-    for y in center.y - side_reach..=center.y + side_reach {
-        for x in center.x - side_reach..=center.x + side_reach {
-            if x < 0 || y < 0 || x >= size || y >= size {
-                continue;
-            }
-            let tile = TilePos { x, y };
-            let elevation = terrain_elevation(world, tile);
-            if elevation <= 0.0 {
-                continue;
-            }
-            if x > 0 {
-                let lower = terrain_elevation(world, TilePos { x: x - 1, y });
-                if elevation > lower && direction.x.abs() >= f32::EPSILON {
-                    let distance = (x as f32 * WORLD_TILE_SIZE - origin.x) / direction.x;
-                    if distance >= 0.0 && distance < best.0 {
-                        let point = origin + direction * distance;
-                        let y0 = y as f32 * WORLD_TILE_SIZE;
-                        let y1 = y0 + WORLD_TILE_SIZE;
-                        if point.y >= y0 - epsilon
-                            && point.y <= y1 + epsilon
-                            && point.z >= lower - epsilon
-                            && point.z <= elevation + epsilon
-                        {
-                            best = (distance, point, tile);
-                        }
-                    }
-                }
-            }
-            if y > 0 {
-                let lower = terrain_elevation(world, TilePos { x, y: y - 1 });
-                if elevation > lower && direction.y.abs() >= f32::EPSILON {
-                    let distance = (y as f32 * WORLD_TILE_SIZE - origin.y) / direction.y;
-                    if distance >= 0.0 && distance < best.0 {
-                        let point = origin + direction * distance;
-                        let x0 = x as f32 * WORLD_TILE_SIZE;
-                        let x1 = x0 + WORLD_TILE_SIZE;
-                        if point.x >= x0 - epsilon
-                            && point.x <= x1 + epsilon
-                            && point.z >= lower - epsilon
-                            && point.z <= elevation + epsilon
-                        {
-                            best = (distance, point, tile);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    Some(TerrainHit {
-        point: best.1,
-        tile: best.2,
+        },
     })
 }
 

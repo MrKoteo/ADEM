@@ -16,7 +16,7 @@ use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use crate::app::state::{EditorSelection, GameMode, GameState, TickAccumulator, interpolate_pos};
 use crate::simulation::{BuildingKind, ChunkPos, EntityKind, Facing, ObjectKind, TilePos, World, WorldPos, CHUNK_SIZE, TILE_SIZE};
 
-use super::isometric::{WORLD_TILE_SIZE, tile_elevation, world_position};
+use super::isometric::{WORLD_TILE_SIZE, height_to_world, world_position};
 use super::terrain::{BlockPos, lod_for_scale};
 use super::textures::{AtlasKind, AtlasTexture, TextureAtlases};
 
@@ -1297,7 +1297,7 @@ fn collect_objects(
                 let tile_world = Vec3::new(
                     (tile_x as f32 + 0.5) * WORLD_TILE_SIZE,
                     (tile_y as f32 + 0.5) * WORLD_TILE_SIZE,
-                    tile_elevation(chunk.terrain.get(idx as usize)),
+                    height_to_world(chunk.heights.get(idx as usize)),
                 );
                 let anchor = tile_world - origin;
                 match obj.kind {
@@ -1386,7 +1386,7 @@ fn collect_crops(
                 let tile_world = Vec3::new(
                     (tile.x as f32 + 0.5) * WORLD_TILE_SIZE,
                     (tile.y as f32 + 0.5) * WORLD_TILE_SIZE,
-                    tile_elevation(chunk.terrain.get(idx as usize)),
+                    height_to_world(chunk.heights.get(idx as usize)),
                 );
                 let texture = atlases.crop(crop.kind, crop.stage);
                 let uv = atlases.uv(texture);
@@ -1435,7 +1435,7 @@ fn collect_items(
                 let tile_world = Vec3::new(
                     (tile.x as f32 + 0.5) * WORLD_TILE_SIZE,
                     (tile.y as f32 + 0.5) * WORLD_TILE_SIZE,
-                    tile_elevation(chunk.terrain.get(idx as usize)),
+                    height_to_world(chunk.heights.get(idx as usize)),
                 );
                 let local = tile_world - origin;
                 let item_anchor = local + Vec3::Z;

@@ -16,6 +16,8 @@
 //!     chunks_per_side        u32
 //!     чанки по порядку (row-major):
 //!       рельеф:   tag u8: 0 = Uniform + TileType u8 | 1 = Full + 256 байт
+//!       высоты:   tag u8: 0 = Uniform + u16 | 1 = Packed +
+//!                 min u16 + bits u8 + ceil(256*bits/64) × u64
 //!       ресурсы:  u16 count + [index u8, kind u8, amount u16] по индексам
 //!       объекты:  u16 count + [index u8, kind u8, stage u8, charge u16]
 //!       предметы: u16 count + [index u8, kind u8, count u32] по индексам
@@ -75,8 +77,9 @@ use std::fmt;
 /// удалена, у снаряда появилось поле стрелка. Версия 4: голод перенесён
 /// из «ума» на уровень существа — голодают все виды, включая волка.
 /// Версия 5: пол, возраст и индивидуальная продолжительность жизни существа.
-/// Сейвы v4 и старше не читаются.
-pub const SAVE_FORMAT_VERSION: u32 = 5;
+/// Версия 6: слой высот чанка (Heightmap).
+/// Сейвы v5 и старше не читаются.
+pub const SAVE_FORMAT_VERSION: u32 = 6;
 
 /// Магия в начале файла.
 pub(super) const MAGIC: [u8; 4] = *b"ADEM";

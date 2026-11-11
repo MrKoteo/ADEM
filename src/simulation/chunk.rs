@@ -1,11 +1,12 @@
-//! Чанк — блок 16×16 тайлов. Несколько независимых слоёв: рельеф, ресурсы,
-//! объекты, предметы на земле, культуры, контейнеры станций.
+//! Чанк — блок 16×16 тайлов. Несколько независимых слоёв: рельеф, высоты,
+//! ресурсы, объекты, предметы на земле, культуры, контейнеры станций.
 //! Слои хранятся и сжимаются независимо (GAME_DESIGN 3.2, ARCHITECTURE 2.2).
 
 use std::collections::HashMap;
 
 use super::containers::Container;
 use super::crops::Crop;
+use super::heightmap::Heightmap;
 use super::items::ItemStack;
 use super::objects::WorldObject;
 use super::tile::{ResourceKind, TileType};
@@ -73,6 +74,8 @@ pub struct ResourceDeposit {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Chunk {
     pub terrain: TerrainTiles,
+    /// Высоты тайлов 0..4095 (точные, сжаты по чанку).
+    pub heights: Heightmap,
     /// Ресурсы по линейному индексу тайла 0..256.
     pub resources: HashMap<u8, ResourceDeposit>,
     /// Объекты по линейному индексу тайла 0..256. Правило: один объект на тайл.
@@ -91,6 +94,7 @@ impl Chunk {
     pub fn empty() -> Self {
         Self {
             terrain: TerrainTiles::uniform(TileType::Empty),
+            heights: Heightmap::uniform(0),
             resources: HashMap::new(),
             objects: HashMap::new(),
             items: HashMap::new(),

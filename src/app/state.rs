@@ -148,17 +148,34 @@ pub enum ToolCategory {
     Buildings,
     /// Размещение существ (пока только волк).
     Entities,
+    /// Кисть высот: поднять/опустить/сгладить слой Heightmap.
+    Height,
 }
 
 impl ToolCategory {
     /// Все категории в порядке UI.
-    pub const ALL: [ToolCategory; 4] = [
+    pub const ALL: [ToolCategory; 5] = [
         ToolCategory::Tiles,
         ToolCategory::Objects,
         ToolCategory::Buildings,
         ToolCategory::Entities,
+        ToolCategory::Height,
     ];
 }
+
+/// Инструмент кисти высот (редактор).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum HeightTool {
+    /// Поднять тайл на `HEIGHT_BRUSH_STEP`.
+    Raise,
+    /// Опустить тайл на `HEIGHT_BRUSH_STEP`.
+    Lower,
+    /// Поставить среднюю высоту соседей.
+    Smooth,
+}
+
+/// Шаг кисти высот за одно нажатие, уровней (1 уровень = 0.1 юнита).
+pub const HEIGHT_BRUSH_STEP: i32 = 10;
 
 /// Выбранный инструмент редактора: что ставится кликом по карте.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -171,17 +188,20 @@ pub enum Tool {
     Building(BuildingKind),
     /// Существо в тайле.
     Entity(EntityKind),
+    /// Кисть высот (поднять/опустить/сгладить).
+    Height(HeightTool),
 }
 
 impl Tool {
     /// Категория инструмента: в каком подменю панели он живёт. Постройки
-    /// выделены в собственную категорию, объекты — в Objects.
+    /// выделены в собственный категорию, объекты — в Objects.
     pub fn category(self) -> ToolCategory {
         match self {
             Tool::Tile(_) => ToolCategory::Tiles,
             Tool::Object(_) => ToolCategory::Objects,
             Tool::Building(_) => ToolCategory::Buildings,
             Tool::Entity(_) => ToolCategory::Entities,
+            Tool::Height(_) => ToolCategory::Height,
         }
     }
 }

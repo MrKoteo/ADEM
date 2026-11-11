@@ -1,7 +1,7 @@
 //! Категории инструментов и содержимое подменю: наборы кнопок базового
 //! вида и открытых подменю, их иконки и русские названия для тултипов.
 
-use crate::app::state::{GameState, LensKind, SimSpeed, Tool, ToolCategory};
+use crate::app::state::{GameState, HeightTool, LensKind, SimSpeed, Tool, ToolCategory};
 use crate::simulation::entities::EntityKind;
 use crate::simulation::objects::{BuildingKind, ObjectKind};
 use crate::simulation::tile::TileType;
@@ -39,6 +39,20 @@ fn tools_of(category: ToolCategory) -> Vec<Tool> {
             BuildingKind::ALL.iter().copied().map(Tool::Building).collect()
         }
         ToolCategory::Entities => EntityKind::ALL.iter().map(|k| Tool::Entity(*k)).collect(),
+        ToolCategory::Height => vec![
+            Tool::Height(HeightTool::Raise),
+            Tool::Height(HeightTool::Lower),
+            Tool::Height(HeightTool::Smooth),
+        ],
+    }
+}
+
+/// Подпись кнопки кисти высот (короткая, для квадратной кнопки).
+fn height_tool_label(tool: HeightTool) -> &'static str {
+    match tool {
+        HeightTool::Raise => "+",
+        HeightTool::Lower => "−",
+        HeightTool::Smooth => "≈",
     }
 }
 
@@ -49,6 +63,7 @@ fn category_icon(category: ToolCategory, icons: &UiIcons) -> Handle<Image> {
         ToolCategory::Objects => icons.object(ObjectKind::Tree),
         ToolCategory::Buildings => icons.object(ObjectKind::Building(BuildingKind::Campfire)),
         ToolCategory::Entities => icons.entity(EntityKind::Wolf),
+        ToolCategory::Height => icons.tile(TileType::Mountain),
     }
     .clone()
 }
@@ -107,6 +122,7 @@ pub(crate) fn panel_action_tooltip(action: &PanelAction) -> Option<&'static str>
             ToolCategory::Objects => "Объекты",
             ToolCategory::Buildings => "Постройки",
             ToolCategory::Entities => "Существа",
+            ToolCategory::Height => "Высота",
         }),
         PanelAction::OpenMenu(PanelMenu::Lenses) => Some("Линзы карты"),
         PanelAction::Back => Some("Назад"),
@@ -115,6 +131,9 @@ pub(crate) fn panel_action_tooltip(action: &PanelAction) -> Option<&'static str>
             Tool::Object(kind) => object_kind_name(*kind),
             Tool::Building(kind) => crate::ui::construction::building_name(*kind),
             Tool::Entity(kind) => entity_kind_name(*kind),
+            Tool::Height(HeightTool::Raise) => "Поднять высоту",
+            Tool::Height(HeightTool::Lower) => "Опустить высоту",
+            Tool::Height(HeightTool::Smooth) => "Сгладить высоту",
         }),
         PanelAction::ToggleLens(kind) => Some(match kind {
             LensKind::Sentients => "Разумные существа",
@@ -170,15 +189,26 @@ pub(crate) fn menu_items(menu: PanelMenu, icons: &UiIcons) -> Vec<PanelItem> {
             .collect(),
         PanelMenu::Tools(category) => tools_of(category)
             .into_iter()
-            .map(|tool| PanelItem {
-                action: PanelAction::SelectTool(tool),
-                content: ButtonContent::Icon(match tool {
-                    Tool::Tile(kind) => icons.tile(kind),
-                    Tool::Object(kind) => icons.object(kind),
-                    Tool::Building(kind) => icons.object(ObjectKind::Building(kind)),
-                    Tool::Entity(kind) => icons.entity(kind),
+            .map(|tool| {
+                let content = match tool {
+                    Tool::Height(height_tool) => {
+                        ButtonContent::Text(height_tool_label(height_tool))
+                    }
+                    _ => ButtonContent::Icon(
+                        match tool {
+                            Tool::Tile(kind) => icons.tile(kind),
+                            Tool::Object(kind) => icons.object(kind),
+                            Tool::Building(kind) => icons.object(ObjectKind::Building(kind)),
+                            Tool::Entity(kind) => icons.entity(kind),
+                            Tool::Height(_) => unreachable!(),
+                        }
+                        .clone(),
+                    ),
+                };
+                PanelItem {
+                    action: PanelAction::SelectTool(tool),
+                    content,
                 }
-                .clone()),
             })
             .collect(),
         PanelMenu::Lenses => [

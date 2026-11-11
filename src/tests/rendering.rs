@@ -133,23 +133,24 @@ fn block_mesh_quad_count_matches_lod() {
 }
 
 #[test]
-fn terrain_elevation_is_derived_from_tile_type() {
-    use crate::rendering::isometric::{WORLD_TILE_SIZE, tile_elevation, world_position};
+fn terrain_elevation_comes_from_the_height_layer() {
+    use crate::rendering::isometric::{WORLD_TILE_SIZE, height_to_world, world_position};
     use crate::simulation::{TilePos, World};
 
     let mut world = World::new(WorldSize::new(256), 1);
-    world.set_terrain(TilePos { x: 2, y: 3 }, TileType::Mountain);
+    let tile = TilePos { x: 2, y: 3 };
+    world.set_terrain(tile, TileType::Mountain);
+    world.set_height(tile, 2000);
     let position = world_position(&world, bevy::math::Vec2::new(2.5, 3.5));
 
     assert_eq!(position.x, 2.5 * WORLD_TILE_SIZE);
     assert_eq!(position.y, 3.5 * WORLD_TILE_SIZE);
-    assert_eq!(position.z, tile_elevation(TileType::Mountain));
-    assert_eq!(tile_elevation(TileType::Water), tile_elevation(TileType::Sand));
-    assert!(
-        tile_elevation(TileType::Grass) < tile_elevation(TileType::ForestGrass)
-            && tile_elevation(TileType::ForestGrass) < tile_elevation(TileType::Stone)
-            && tile_elevation(TileType::Stone) < tile_elevation(TileType::Mountain)
-    );
+    assert_eq!(position.z, height_to_world(2000));
+
+    // Тип тайла больше не влияет на высоту: меняем тип, высота остаётся.
+    world.set_terrain(tile, TileType::Grass);
+    let position = world_position(&world, bevy::math::Vec2::new(2.5, 3.5));
+    assert_eq!(position.z, height_to_world(2000));
 }
 
 #[test]
@@ -157,7 +158,10 @@ fn elevated_tile_mesh_has_top_and_camera_facing_sides() {
     use crate::simulation::{TilePos, World};
 
     let mut world = World::new(WorldSize::new(256), 1);
-    world.set_terrain(TilePos { x: 0, y: 0 }, TileType::Mountain);
+    let tile = TilePos { x: 0, y: 0 };
+    world.set_terrain(tile, TileType::Mountain);
+    // Высота — отдельный слой; без неё тайл плоский и стенок не даёт.
+    world.set_height(tile, 2000);
     let mesh = build_block_mesh(&world, BlockPos { x: 0, y: 0 }, 0, &tile_uv_table())
         .expect("mountain tile");
 
@@ -173,6 +177,9 @@ fn adjacent_equal_height_tiles_do_not_create_internal_walls() {
     let mut world = crate::simulation::World::new(WorldSize::new(256), 1);
     world.set_terrain(TilePos { x: 63, y: 0 }, TileType::Mountain);
     world.set_terrain(TilePos { x: 64, y: 0 }, TileType::Mountain);
+    // Одинаковая высота на границе блоков: внутренней стенки быть не должно.
+    world.set_height(TilePos { x: 63, y: 0 }, 2000);
+    world.set_height(TilePos { x: 64, y: 0 }, 2000);
 
     let left = build_block_mesh(&world, BlockPos { x: 3, y: 0 }, 0, &tile_uv_table())
         .expect("left mountain");

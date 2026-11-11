@@ -7,6 +7,7 @@ use super::combat::{Projectile, StuckSpear};
 use super::containers::Container;
 use super::crops::Crop;
 use super::entities::{EntityStore, FaunaScratch, LandSearchScratch};
+use super::heightmap::HEIGHT_MAX;
 use super::item_entity::{ItemEntities, ItemEntity, ItemScratch};
 use super::items::ItemStack;
 use super::objects::WorldObject;
@@ -162,8 +163,8 @@ impl World {
         size.tiles() / CHUNK_SIZE as u32
     }
 
-    /// Оценка расхода ОЗУ миром в байтах (для F3-панели): чанки с рельефом
-    /// и разреженными слоями, существа, снаряды, планировщик. Приближение
+    /// Оценка расхода ОЗУ миром в байтах (для F3-панели): чанки с рельефом,
+    /// высотами и разреженными слоями, существа, снаряды, планировщик. Приближение
     /// без учёта аллокатора: ёмкости × размер записи, hashbrown с запасом
     /// на байт управления и загрузку 7/8. Итог делить на байты/тайл —
     /// основной показатель бюджета памяти (ARCHITECTURE 3.1).
@@ -182,6 +183,7 @@ impl World {
                 // Отдельная аллокация Box<[TileType; 256]>.
                 bytes += 256 * size_of::<TileType>();
             }
+            bytes += chunk.heights.memory_bytes();
             bytes += map_bytes::<u8, ResourceDeposit>(chunk.resources.len());
             bytes += map_bytes::<u8, WorldObject>(chunk.objects.len());
             bytes += map_bytes::<u8, ItemStack>(chunk.items.len());
@@ -261,6 +263,37 @@ impl World {
     pub fn set_terrain(&mut self, pos: TilePos, kind: TileType) {
         let (cpos, idx) = split_tile_pos(pos);
         self.chunk_mut(cpos).terrain.set(idx as usize, kind);
+    }
+
+    /// Точная высота тайла (0..4095). `None` — позиция вне мира.
+    /// Высоты хранятся слоем чанка и не зависят от вида рельефа.
+    #[inline]
+    pub fn height(&self, pos: TilePos) -> Option<u16> {
+        let side = self.size.tiles() as i32;
+        if pos.x < 0 || pos.y < 0 || pos.x >= side || pos.y >= side {
+            return None;
+        }
+        let (cpos, idx) = split_tile_pos(pos);
+        Some(self.chunk(cpos).heights.get(idx as usize))
+    }
+
+    /// Высота тайла или запасное значение вне мира.
+    #[inline]
+    pub fn height_or(&self, pos: TilePos, fallback: u16) -> u16 {
+        self.height(pos).unwrap_or(fallback)
+    }
+
+    /// Записывает высоту тайла. Возвращает `true`, если значение изменилось.
+    /// Смена высоты не меняет вид рельефа: это независимые слои.
+    pub fn set_height(&mut self, pos: TilePos, height: u16) -> bool {
+        let side = self.size.tiles() as i32;
+        if pos.x < 0 || pos.y < 0 || pos.x >= side || pos.y >= side {
+            return false;
+        }
+        let (cpos, idx) = split_tile_pos(pos);
+        self.chunk_mut(cpos)
+            .heights
+            .set(idx as usize, height.min(HEIGHT_MAX))
     }
 
     /// Меняет ресурс тайла; `None` или нулевое количество убирает запись —

@@ -10,7 +10,7 @@ use bevy::ui_widgets::TextInput;
 use crate::app::input::move_dir;
 use crate::app::settings::Settings;
 use crate::app::state::{GameMode, GameState, SimTick, TickAccumulator, controlled_render_pos};
-use crate::rendering::isometric::{WORLD_TILE_SIZE, world_position};
+use crate::rendering::isometric::{WORLD_TILE_SIZE, terrain_elevation, world_position};
 use crate::ui::pause_menu::BindingCapture;
 use crate::ui::text_input_focused;
 
@@ -43,9 +43,9 @@ impl CameraTarget {
 
     /// Ставит камеру точно в центр мира (высота — поверхность). Вызывается
     /// один раз после перегенерации/загрузки мира и вручную по L.
-    pub(crate) fn center_on_world(&mut self, world_size: u32) {
+    pub(crate) fn center_on_world(&mut self, world_size: u32, height: f32) {
         let center = world_size as f32 * WORLD_TILE_SIZE * 0.5;
-        self.target = Vec3::new(center, center, 0.0);
+        self.target = Vec3::new(center, center, height);
         self.height_velocity = 0.0;
         self.following_player = false;
     }
@@ -236,7 +236,7 @@ fn recenter_on_world_change(
     }
     *last_epoch = Some(state.world_epoch);
     if state.world.is_some() {
-        camera_target.center_on_world(state.world_size.tiles());
+        camera_target.center_on_world(state.world_size.tiles(), center_height(&state));
     }
 }
 
@@ -259,7 +259,19 @@ fn center_camera_key(
     {
         return;
     }
-    camera_target.center_on_world(state.world_size.tiles());
+    camera_target.center_on_world(state.world_size.tiles(), center_height(&state));
+}
+
+/// Высота поверхности в центре мира: после появления слоя высот камера
+/// должна смотреть на рельеф, а не на плоскость z=0 под ним.
+fn center_height(state: &GameState) -> f32 {
+    let side = state.world_size.tiles() as i32;
+    let center = crate::simulation::TilePos { x: side / 2, y: side / 2 };
+    state
+        .world
+        .as_ref()
+        .map(|world| terrain_elevation(world, center))
+        .unwrap_or(0.0)
 }
 
 fn follow_player(    state: Res<GameState>,

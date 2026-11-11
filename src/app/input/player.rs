@@ -9,7 +9,7 @@ use bevy::prelude::*;
 use bevy::ui_widgets::TextInput;
 
 use crate::app::settings::{ControlAction, Settings};
-use crate::app::state::{ClockRes, CommandQueueRes, GameMode, GameState, MenuKind};
+use crate::app::state::{ClockRes, CommandQueueRes, GameMode, GameState, HEIGHT_BRUSH_STEP, HeightTool, MenuKind};
 use crate::app::input::{PlayerInput, WeaponFx, WeaponFxKind, move_dir, player_grid_dir};
 use crate::rendering::{EntitySpriteVisuals, TextureAtlases};
 use crate::simulation::actions;
@@ -203,6 +203,17 @@ pub(crate) fn world_click_input(
                 object: Some(crate::simulation::objects::WorldObject::building(kind)),
             },
             crate::app::state::Tool::Entity(kind) => Command::SpawnEntity { kind, pos: tile },
+            crate::app::state::Tool::Height(tool) => match tool {
+                HeightTool::Raise => Command::AddHeight {
+                    pos: tile,
+                    delta: HEIGHT_BRUSH_STEP,
+                },
+                HeightTool::Lower => Command::AddHeight {
+                    pos: tile,
+                    delta: -HEIGHT_BRUSH_STEP,
+                },
+                HeightTool::Smooth => Command::SmoothHeight { pos: tile },
+            },
         };
         queue.0.push(command);
         *drag = Some(tile);

@@ -19,6 +19,8 @@ fn save_roundtrip_world() {
     // объект перезаписываются — все три слоя должны пережить файл.
     world.set_terrain(TilePos { x: 0, y: 0 }, TileType::Sand);
     world.set_terrain(TilePos { x: 255, y: 255 }, TileType::Farmland);
+    // Слой высот: правка конкретного тайла должна пережить файл.
+    world.set_height(TilePos { x: 7, y: 7 }, 1234);
     world.set_resource(TilePos { x: 5, y: 7 }, ResourceKind::Copper, 1234);
     world.set_object(
         TilePos { x: 9, y: 3 },

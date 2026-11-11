@@ -11,6 +11,7 @@ use super::crafts::CraftBook;
 use super::crops::CropKind;
 use super::dirty::DirtyTiles;
 use super::entities::{EntityKind, HumanMind};
+use super::heightmap::HEIGHT_MAX;
 use super::items::{ItemKind, SlotRef, ItemStack, MAX_STACK, MISC_SLOTS};
 use super::objects::{BuildingKind, WorldObject};
 use super::scheduler::{Scheduler, TaskKind};
@@ -24,6 +25,11 @@ use super::world::{TilePos, World, WorldPos, split_tile};
 pub enum Command {
     /// Инструмент «бога»: сменить рельеф тайла.
     SetTerrain { pos: TilePos, kind: TileType },
+    /// Инструмент «бога»: поднять/опустить высоту тайла на `delta`
+    /// (результат зажимается в 0..4095). Тип рельефа не меняется.
+    AddHeight { pos: TilePos, delta: i32 },
+    /// Инструмент «бога»: поставить среднюю высоту восьми соседей.
+    SmoothHeight { pos: TilePos },
     /// Инструмент «бога»: поставить объект на тайл (None — убрать).
     SetObject { pos: TilePos, object: Option<WorldObject> },
     /// Инструмент «бога»: выпустить существо на тайл.
@@ -160,6 +166,47 @@ impl CommandQueue {
                         vegetation::after_tile_changed(world, sched, tick, pos);
                         // Новая пашня редактором — месячная проверка пустоты.
                         schedule_farmland_revert(world, sched, tick, pos);
+                    }
+                }
+                Command::AddHeight { pos, delta } => {
+                    if in_bounds(world, pos) {
+                        let current = i32::from(world.height(pos).unwrap_or(0));
+                        let next = current
+                            .saturating_add(delta)
+                            .clamp(0, i32::from(HEIGHT_MAX)) as u16;
+                        if world.set_height(pos, next) {
+                            dirty.terrain(pos);
+                        }
+                    }
+                }
+                Command::SmoothHeight { pos } => {
+                    if in_bounds(world, pos) {
+                        let mut sum = 0_i32;
+                        let mut count = 0_i32;
+                        for (dx, dy) in [
+                            (0, -1),
+                            (1, 0),
+                            (0, 1),
+                            (-1, 0),
+                            (1, 1),
+                            (-1, -1),
+                            (1, -1),
+                            (-1, 1),
+                        ] {
+                            if let Some(height) =
+                                world.height(TilePos { x: pos.x + dx, y: pos.y + dy })
+                            {
+                                sum += i32::from(height);
+                                count += 1;
+                            }
+                        }
+                        if count > 0 {
+                            let next = ((sum + count / 2) / count)
+                                .clamp(0, i32::from(HEIGHT_MAX)) as u16;
+                            if world.set_height(pos, next) {
+                                dirty.terrain(pos);
+                            }
+                        }
                     }
                 }
                 Command::SetObject { pos, object } => {

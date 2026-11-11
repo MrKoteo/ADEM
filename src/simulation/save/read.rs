@@ -5,6 +5,7 @@
 //! `save/mod.rs`.
 
 use crate::simulation::chunk::{TerrainTiles, CHUNK_TILES};
+use crate::simulation::heightmap::{Heightmap, PackedHeights, HEIGHT_MAX};
 use crate::simulation::entities::{EntityKind, EntityState, EntityStore, Facing, Gender, HumanMind, SimEntity};
 use crate::simulation::items::{
     Inventory, ItemKind, ItemStack, SlotArea, ARMOR_SLOTS, BAUBLE_SLOTS, CLOTHES_SLOTS, MISC_SLOTS,
@@ -85,6 +86,7 @@ pub fn load_game(bytes: &[u8]) -> Result<SavedGame, SaveError> {
             }
             _ => return Err(SaveError::BadData("тип слоя рельефа")),
         };
+        let heights = read_heightmap(&mut r)?;
         let resources = read_sparse_u16(&mut r, ResourceKind::from_discriminant)?;
         let objects = read_sparse_objects(&mut r)?;
         let items = read_sparse_items(&mut r)?;
@@ -93,7 +95,7 @@ pub fn load_game(bytes: &[u8]) -> Result<SavedGame, SaveError> {
         // Контейнер существует только у тайла станции и по размеру совпадает
         // с ёмкостью её вида; разъехавшиеся слои — повреждение.
         validate_container_layer(&objects, &containers)?;
-        chunks.push(crate::simulation::chunk::Chunk { terrain, resources, objects, items, crops, containers });
+        chunks.push(crate::simulation::chunk::Chunk { terrain, heights, resources, objects, items, crops, containers });
     }
 
     // Существа.
@@ -196,6 +198,48 @@ pub fn load_game(bytes: &[u8]) -> Result<SavedGame, SaveError> {
         scheduler,
     })
 }
+/// Читает слой высот чанка: Uniform или Packed. Биты упакованы в u64
+/// little-endian; битовая ширина ограничена 12, значения проверяются.
+fn read_heightmap(r: &mut Reader<'_>) -> Result<Heightmap, SaveError> {
+    let tag = r.read_u8()?;
+    match tag {
+        0 => {
+            let height = r.read_u16()?;
+            if height > HEIGHT_MAX {
+                return Err(SaveError::BadData("высота вне диапазона"));
+            }
+            Ok(Heightmap::uniform(height))
+        }
+        1 => {
+            let min = r.read_u16()?;
+            let bits = r.read_u8()?;
+            if bits == 0 || bits > 12 {
+                return Err(SaveError::BadData("битовая ширина высот"));
+            }
+            if min > HEIGHT_MAX {
+                return Err(SaveError::BadData("минимум высот"));
+            }
+            let words_len = (CHUNK_TILES * bits as usize).div_ceil(64);
+            let mut words = Vec::with_capacity(words_len);
+            for _ in 0..words_len {
+                words.push(r.read_u64()?);
+            }
+            let packed = PackedHeights {
+                min,
+                bits,
+                words: words.into_boxed_slice(),
+            };
+            for idx in 0..CHUNK_TILES {
+                if packed.get(idx) > HEIGHT_MAX {
+                    return Err(SaveError::BadData("высота вне диапазона"));
+                }
+            }
+            Ok(Heightmap::Packed(packed))
+        }
+        _ => Err(SaveError::BadData("тег высот")),
+    }
+}
+
 /// Читает разреженный слой вида (index u8, kind u8, amount u16).
 fn read_sparse_u16(
     r: &mut Reader<'_>,

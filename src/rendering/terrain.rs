@@ -12,6 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use bevy::asset::RenderAssetUsages;
+use bevy::ecs::system::SystemParam;
 use bevy::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::pbr::{ExtendedMaterial, MaterialExtension};
 use bevy::prelude::*;
@@ -25,12 +26,16 @@ use crate::simulation::dirty::DirtyTiles;
 use crate::simulation::{ChunkPos, TerrainTiles, TilePos, TileType, World, CHUNK_SIZE, TILE_SIZE};
 use crate::ui::UiFont;
 
-use super::isometric::{WORLD_TILE_SIZE, tile_elevation};
+use super::isometric::{MAX_WORLD_HEIGHT, WORLD_TILE_SIZE, height_to_world};
 use super::sprites::spawn_block_decor;
 use super::textures::TextureAtlases;
 
 /// Сторона блока на самых крупных LOD.
 pub(crate) const MAX_BLOCK_TILES: i32 = 64;
+
+/// Стенки ниже этой высоты (в мировых единицах) заливаются основным цветом
+/// тайла вместо растянутой текстуры. 0.1 тайла = 1.6 юнита.
+const FLAT_WALL_MAX_WORLD: f32 = TILE_SIZE * 0.1;
 
 /// Сторона terrain-меша для данного LOD. Ближний LOD строится по чанкам
 /// (16×16): правка одного тайла пересобирает маленький меш, а не блок
@@ -93,6 +98,7 @@ pub(crate) fn decor_visible_at(lod: u32) -> bool {
 const VIEW_MARGIN_TILES: f32 = 10.0;
 
 const TERRAIN_LENS_SHADER_PATH: &str = "shaders/terrain_lens.wesl";
+const TERRAIN_SHADE_SHADER_PATH: &str = "shaders/terrain_shade.wesl";
 
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
 pub(crate) struct TerrainLensExtension {}
@@ -109,14 +115,40 @@ impl MaterialExtension for TerrainLensExtension {
 
 pub(crate) type TerrainMaterial = ExtendedMaterial<StandardMaterial, TerrainLensExtension>;
 
+/// Обычный материал террейна: тот же StandardMaterial, но с фрагментным
+/// затенением по наклону поверхности. Без vertex color — 16 байт/вершину
+/// не тратятся, когда линзы выключены.
+#[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
+pub(crate) struct TerrainShadeExtension {}
+
+impl MaterialExtension for TerrainShadeExtension {
+    fn fragment_shader() -> ShaderRef {
+        TERRAIN_SHADE_SHADER_PATH.into()
+    }
+
+    fn enable_prepass() -> bool {
+        false
+    }
+}
+
+pub(crate) type TerrainShadeMaterial = ExtendedMaterial<StandardMaterial, TerrainShadeExtension>;
+
+/// Ассеты рендера террейна одним параметром: у `render_world` уже 16
+/// аргументов, а Bevy реализует `System` только до 16 включительно.
+#[derive(SystemParam)]
+pub(crate) struct TerrainAssets<'w> {
+    pub(crate) meshes: ResMut<'w, Assets<Mesh>>,
+    pub(crate) materials: ResMut<'w, Assets<StandardMaterial>>,
+    pub(crate) terrain_materials: Res<'w, Assets<TerrainMaterial>>,
+    pub(crate) shade_materials: Res<'w, Assets<TerrainShadeMaterial>>,
+}
+
 /// Материал terrain-блока: с линзами (расширенный шейдер + vertex color)
-/// или обычный `StandardMaterial` без атрибута цвета. Цвет вершины — 16
-/// байт на вершину и аллокация на каждый меш; когда линзы выключены, он
-/// не нужен вовсе.
+/// или обычный затенённый без цвета.
 #[derive(Clone)]
 pub(crate) enum TerrainMaterialHandle {
     Lens(Handle<TerrainMaterial>),
-    Plain(Handle<StandardMaterial>),
+    Shade(Handle<TerrainShadeMaterial>),
 }
 
 impl TerrainMaterialHandle {
@@ -126,7 +158,7 @@ impl TerrainMaterialHandle {
             TerrainMaterialHandle::Lens(handle) => {
                 entity.insert(MeshMaterial3d(handle.clone()));
             }
-            TerrainMaterialHandle::Plain(handle) => {
+            TerrainMaterialHandle::Shade(handle) => {
                 entity.insert(MeshMaterial3d(handle.clone()));
             }
         }
@@ -152,8 +184,8 @@ pub(crate) struct BlockPos {
 #[derive(Resource, Default)]
 pub(crate) struct TerrainRender {
     pub(crate) material: Option<Handle<TerrainMaterial>>,
-    /// Обычный материал без vertex color (линзы выключены).
-    pub(crate) plain_material: Option<Handle<StandardMaterial>>,
+    /// Обычный материал без vertex color (линзы выключены), с затенением.
+    pub(crate) shade_material: Option<Handle<TerrainShadeMaterial>>,
     /// Текущий режим мешей: `true` — с vertex color и lens-материалом.
     pub(crate) lens_mode: Option<bool>,
     /// Готовая сцена текущего LOD: видимые блоки.
@@ -243,7 +275,7 @@ pub(crate) fn ensure_ground_material(
     mut render: ResMut<TerrainRender>,
     atlases: Option<Res<TextureAtlases>>,
     mut materials: ResMut<Assets<TerrainMaterial>>,
-    mut plain_materials: ResMut<Assets<StandardMaterial>>,
+    mut shade_materials: ResMut<Assets<TerrainShadeMaterial>>,
 ) {
     let Some(atlases) = atlases else {
         return;
@@ -259,12 +291,15 @@ pub(crate) fn ensure_ground_material(
             extension: TerrainLensExtension {},
         }));
     }
-    if render.plain_material.is_none() {
-        render.plain_material = Some(plain_materials.add(StandardMaterial {
-            base_color_texture: Some(atlases.tiles.image.clone()),
-            alpha_mode: AlphaMode::Opaque,
-            unlit: true,
-            ..default()
+    if render.shade_material.is_none() {
+        render.shade_material = Some(shade_materials.add(ExtendedMaterial {
+            base: StandardMaterial {
+                base_color_texture: Some(atlases.tiles.image.clone()),
+                alpha_mode: AlphaMode::Opaque,
+                unlit: true,
+                ..default()
+            },
+            extension: TerrainShadeExtension {},
         }));
     }
 }
@@ -276,9 +311,7 @@ pub(crate) fn render_world(
     mut state: ResMut<GameState>,
     mut render: ResMut<TerrainRender>,
     mut metrics: ResMut<RenderMetrics>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    terrain_materials: Res<Assets<TerrainMaterial>>,
+    assets: TerrainAssets,
     mut sprite_assets: ResMut<super::sprites::WorldSpriteAssets>,
     atlases: Option<Res<TextureAtlases>>,
     font: Res<UiFont>,
@@ -288,6 +321,12 @@ pub(crate) fn render_world(
     mut mesh_pool: Local<MeshBufferPool>,
     mut visible_caches: Local<VisibleCaches>,
 ) {
+    let TerrainAssets {
+        mut meshes,
+        mut materials,
+        terrain_materials,
+        shade_materials,
+    } = assets;
     // Мир перегенерирован: убираем обе сцены и начинаем с нуля. Очередь
     // dirty-рельефа старого мира тоже не нужна.
     if state.pending_rerender {
@@ -322,13 +361,13 @@ pub(crate) fn render_world(
         }
         TerrainMaterialHandle::Lens(handle)
     } else {
-        let Some(handle) = render.plain_material.clone() else {
+        let Some(handle) = render.shade_material.clone() else {
             return;
         };
-        if materials.get(&handle).is_none() {
+        if shade_materials.get(&handle).is_none() {
             return;
         }
-        TerrainMaterialHandle::Plain(handle)
+        TerrainMaterialHandle::Shade(handle)
     };
     if render.lens_mode != Some(lenses_enabled) {
         render.lens_mode = Some(lenses_enabled);
@@ -1195,7 +1234,7 @@ fn build_fallback_block_mesh(
     }
     let kind = kind_for_atlas_index(dominant_atlas_index(&counts)?)?;
     let index = tile_atlas_index(kind)?;
-    let elevation = tile_elevation(kind);
+    let elevation = height_to_world(cell_height(world, base_x, base_y, step, world_tiles));
     let width_tiles = (world_tiles - base_x).clamp(0, step) as f32;
     let height_tiles = (world_tiles - base_y).clamp(0, step) as f32;
     let points = [
@@ -1296,7 +1335,7 @@ fn block_region_intersects_view(
     let max = Vec3::new(
         (bx1 * step).min(world_tiles) as f32 * WORLD_TILE_SIZE,
         (by1 * step).min(world_tiles) as f32 * WORLD_TILE_SIZE,
-        tile_elevation(TileType::Mountain),
+        MAX_WORLD_HEIGHT,
     );
     let camera_position = camera.translation;
     let rotation = camera.rotation;
@@ -1392,6 +1431,8 @@ pub(crate) fn lod_transition_for(
 pub(crate) struct BlockMeshScratch {
     counts: Vec<u32>,
     kinds: Vec<Option<TileType>>,
+    /// Высоты ячеек блока (в уровнях 0..4095), параллельно `kinds`.
+    heights: Vec<u16>,
     /// Множество затронутых блоков при dirty-перестройке (не выделяется
     /// на каждую правку тайла).
     blocks: HashSet<BlockPos>,
@@ -1508,14 +1549,20 @@ pub(crate) fn build_block_mesh_cached(
     scratch.counts.resize(tile_kinds, 0);
     scratch.kinds.clear();
     scratch.kinds.resize(cells * cells, None);
+    scratch.heights.clear();
+    scratch.heights.resize(cells * cells, 0);
     let counts = &mut scratch.counts;
     let kinds = &mut scratch.kinds;
+    let heights = &mut scratch.heights;
 
     for cy in 0..cells {
         for cx in 0..cells {
             let x0 = base_x + cx as i32 * cell_tiles;
             let y0 = base_y + cy as i32 * cell_tiles;
-            kinds[cy * cells + cx] = cell_kind(world, x0, y0, cell_tiles, world_tiles, counts);
+            let idx = cy * cells + cx;
+            let (kind, height) = cell_surface(world, x0, y0, cell_tiles, world_tiles, counts);
+            kinds[idx] = kind;
+            heights[idx] = height;
         }
     }
     // Буферы берутся из пула: при пересборке блоков их ёмкость переходит
@@ -1544,7 +1591,8 @@ pub(crate) fn build_block_mesh_cached(
     };
     for cy in 0..cells {
         for cx in 0..cells {
-            let Some(kind) = kinds[cy * cells + cx] else {
+            let cell_index = cy * cells + cx;
+            let Some(kind) = kinds[cell_index] else {
                 continue;
             };
             let Some(index) = tile_atlas_index(kind) else {
@@ -1556,7 +1604,8 @@ pub(crate) fn build_block_mesh_cached(
             let ly0 = cy as f32 * cell_tiles as f32;
             let lx1 = lx0 + cell_tiles as f32;
             let ly1 = ly0 + cell_tiles as f32;
-            let elevation = tile_elevation(kind);
+            let elevation = height_to_world(heights[cell_index]);
+            let top_uv = atlas_uv_coordinates(tile_uv[index as usize]);
 
             push_quad(
                 [
@@ -1565,31 +1614,56 @@ pub(crate) fn build_block_mesh_cached(
                     point(lx1, ly1, elevation),
                     point(lx0, ly1, elevation),
                 ],
-                atlas_uv_coordinates(tile_uv[index as usize]),
+                top_uv,
             );
+
+            // Очень низкие стенки (< 0.3 тайла) заливаем основным цветом
+            // тайла: текстура на такой высоте всё равно не читается, а
+            // выборка одного текселя дешевле растянутого атласа.
+            let solid_uv = {
+                let [u0, v0, u1, v1] = tile_uv[index as usize];
+                let center = [(u0 + u1) * 0.5, (v0 + v1) * 0.5];
+                [center; 4]
+            };
 
             let edges = [
                 (cx as i32 - 1, cy as i32, x0 as i32 - cell_tiles, y0 as i32, 0_u8),
                 (cx as i32, cy as i32 - 1, x0 as i32, y0 as i32 - cell_tiles, 2),
             ];
             for (nx, ny, neighbor_x, neighbor_y, edge) in edges {
-                let neighbor_kind = if nx >= 0
-                    && ny >= 0
-                    && nx < cells as i32
-                    && ny < cells as i32
-                {
-                    kinds[ny as usize * cells + nx as usize]
+                let inside_block = nx >= 0 && ny >= 0 && nx < cells as i32 && ny < cells as i32;
+                let neighbor_elevation = if inside_block {
+                    let neighbor_index = ny as usize * cells + nx as usize;
+                    if kinds[neighbor_index].is_some() {
+                        height_to_world(heights[neighbor_index])
+                    } else {
+                        0.0
+                    }
                 } else {
-                    cell_kind(
-                        world,
-                        neighbor_x,
-                        neighbor_y,
-                        cell_tiles,
-                        world_tiles,
-                        counts,
-                    )
+                    // За краем мира — уровень моря: у берега не появляется
+                    // искусственный обрыв высотой в целый тайл.
+                    let inside_world = neighbor_x < world_tiles
+                        && neighbor_y < world_tiles
+                        && neighbor_x + cell_tiles > 0
+                        && neighbor_y + cell_tiles > 0;
+                    if !inside_world {
+                        super::isometric::SEA_WORLD_HEIGHT
+                    } else {
+                        let (neighbor_kind, neighbor_height) = cell_surface(
+                            world,
+                            neighbor_x,
+                            neighbor_y,
+                            cell_tiles,
+                            world_tiles,
+                            counts,
+                        );
+                        if neighbor_kind.is_some() {
+                            height_to_world(neighbor_height)
+                        } else {
+                            0.0
+                        }
+                    }
                 };
-                let neighbor_elevation = neighbor_kind.map(tile_elevation).unwrap_or(0.0);
                 if neighbor_elevation >= elevation {
                     continue;
                 }
@@ -1607,7 +1681,12 @@ pub(crate) fn build_block_mesh_cached(
                         point(lx0, ly0, elevation),
                     ],
                 };
-                push_quad(wall, atlas_uv_coordinates(tile_uv[index as usize]));
+                let wall_uv = if elevation - neighbor_elevation < FLAT_WALL_MAX_WORLD {
+                    solid_uv
+                } else {
+                    top_uv
+                };
+                push_quad(wall, wall_uv);
             }
         }
     }
@@ -1701,18 +1780,12 @@ fn atlas_uv_coordinates(uv: [f32; 4]) -> [[f32; 2]; 4] {
     [[u0, v1], [u1, v1], [u1, v0], [u0, v0]]
 }
 
-fn cell_kind(
-    world: &World,
-    x0: i32,
-    y0: i32,
-    cell: i32,
-    world_tiles: i32,
-    counts: &mut [u32],
-) -> Option<TileType> {
+/// Средняя высота ячейки LOD в уровнях 0..4095. Для LOD 0 это высота
+/// самого тайла; для дальних ячеек — среднее по тайлам, как и вид ячейки.
+/// За пределами мира — уровень моря, чтобы у края не появлялся обрыв.
+fn cell_height(world: &World, x0: i32, y0: i32, cell: i32, world_tiles: i32) -> u16 {
     let chunk_side = CHUNK_SIZE as i32;
-    // Ячейка LOD 0–4 (1–16 тайлов) целиком лежит в одном чанке: берём
-    // `TerrainTiles` один раз и читаем тайлы напрямую, без `split_tile`
-    // и повторного поиска чанка на каждый тайл.
+    // Ячейка целиком в одном чанке: читаем слой напрямую, без split_tile.
     if cell <= chunk_side
         && x0 >= 0
         && y0 >= 0
@@ -1725,27 +1798,119 @@ fn cell_kind(
             x: x0.div_euclid(chunk_side) as u32,
             y: y0.div_euclid(chunk_side) as u32,
         };
+        let chunk = world.chunk(cpos);
+        if let Some(height) = chunk.heights.uniform_value() {
+            return height;
+        }
         let local_x = x0.rem_euclid(chunk_side) as usize;
         let local_y = y0.rem_euclid(chunk_side) as usize;
-        return match &world.chunk(cpos).terrain {
-            TerrainTiles::Uniform(kind) => tile_atlas_index(*kind).map(|_| *kind),
-            TerrainTiles::Full(tiles) => {
-                counts.fill(0);
-                for y in 0..cell as usize {
-                    let row = (local_y + y) * chunk_side as usize;
-                    for x in 0..cell as usize {
-                        let kind = tiles[row + local_x + x];
-                        if let Some(index) = tile_atlas_index(kind) {
-                            counts[index as usize] += 1;
-                        }
-                    }
-                }
-                dominant_atlas_index(counts).and_then(kind_for_atlas_index)
+        let mut sum = 0_u32;
+        let mut count = 0_u32;
+        for y in 0..cell as usize {
+            let row = (local_y + y) * chunk_side as usize;
+            for x in 0..cell as usize {
+                sum += u32::from(chunk.heights.get(row + local_x + x));
+                count += 1;
             }
-        };
+        }
+        return (sum / count.max(1)) as u16;
     }
+    // Крупная ячейка пересекает чанки (или край мира).
+    let mut sum = 0_u32;
+    let mut count = 0_u32;
+    for y in y0..y0 + cell {
+        for x in x0..x0 + cell {
+            if x < 0 || y < 0 || x >= world_tiles || y >= world_tiles {
+                continue;
+            }
+            if let Some(height) = world.height(TilePos { x, y }) {
+                sum += u32::from(height);
+                count += 1;
+            }
+        }
+    }
+    sum.checked_div(count)
+        .map(|average| average as u16)
+        .unwrap_or(crate::simulation::SEA_LEVEL)
+}
+/// Вид и средняя высота ячейки LOD. Оба слоя читаются одним проходом:
+/// на дальних LOD это вдвое меньше чтений тайлов, чем два независимых
+/// обхода (`cell_kind` + `cell_height`). За пределами мира высота — море.
+fn cell_surface(
+    world: &World,
+    x0: i32,
+    y0: i32,
+    cell: i32,
+    world_tiles: i32,
+    counts: &mut [u32],
+) -> (Option<TileType>, u16) {
+    let chunk_side = CHUNK_SIZE as i32;
+    // Ячейка LOD 0–4 (1–16 тайлов) целиком лежит в одном чанке: берём
+    // `TerrainTiles`/`Heightmap` один раз и читаем тайлы напрямую.
+    if cell <= chunk_side
+        && x0 >= 0
+        && y0 >= 0
+        && x0 + cell <= world_tiles
+        && y0 + cell <= world_tiles
+        && x0.rem_euclid(chunk_side) + cell <= chunk_side
+        && y0.rem_euclid(chunk_side) + cell <= chunk_side
+    {
+        let cpos = ChunkPos {
+            x: x0.div_euclid(chunk_side) as u32,
+            y: y0.div_euclid(chunk_side) as u32,
+        };
+        let chunk = world.chunk(cpos);
+        let local_x = x0.rem_euclid(chunk_side) as usize;
+        let local_y = y0.rem_euclid(chunk_side) as usize;
+        let terrain_uniform = match &chunk.terrain {
+            TerrainTiles::Uniform(kind) => Some(*kind),
+            TerrainTiles::Full(_) => None,
+        };
+        let height_uniform = chunk.heights.uniform_value();
+
+        if let (Some(kind), Some(height)) = (terrain_uniform, height_uniform) {
+            return (tile_atlas_index(kind).map(|_| kind), height);
+        }
+        if let Some(kind) = terrain_uniform {
+            // Вид один на всю ячейку; нужна только средняя высота.
+            let mut sum = 0_u32;
+            for y in 0..cell as usize {
+                let row = (local_y + y) * chunk_side as usize;
+                for x in 0..cell as usize {
+                    sum += u32::from(chunk.heights.get(row + local_x + x));
+                }
+            }
+            let count = (cell * cell) as u32;
+            return (tile_atlas_index(kind).map(|_| kind), (sum / count.max(1)) as u16);
+        }
+
+        counts.fill(0);
+        let mut sum = 0_u32;
+        let mut count = 0_u32;
+        let need_heights = height_uniform.is_none();
+        for y in 0..cell as usize {
+            let row = (local_y + y) * chunk_side as usize;
+            for x in 0..cell as usize {
+                let idx = row + local_x + x;
+                let kind = chunk.terrain.get(idx);
+                if let Some(index) = tile_atlas_index(kind) {
+                    counts[index as usize] += 1;
+                }
+                if need_heights {
+                    sum += u32::from(chunk.heights.get(idx));
+                }
+                count += 1;
+            }
+        }
+        let kind = dominant_atlas_index(counts).and_then(kind_for_atlas_index);
+        let height = height_uniform.unwrap_or_else(|| (sum / count.max(1)) as u16);
+        return (kind, height);
+    }
+
     // Крупная ячейка (LOD 5–6) пересекает чанки: общий путь с подсчётом.
     counts.fill(0);
+    let mut sum = 0_u32;
+    let mut count = 0_u32;
     for y in y0..y0 + cell {
         for x in x0..x0 + cell {
             if x < 0 || y < 0 || x >= world_tiles || y >= world_tiles {
@@ -1754,9 +1919,18 @@ fn cell_kind(
             if let Some(index) = tile_atlas_index(world.terrain_kind(TilePos { x, y })) {
                 counts[index as usize] += 1;
             }
+            if let Some(height) = world.height(TilePos { x, y }) {
+                sum += u32::from(height);
+            }
+            count += 1;
         }
     }
-    dominant_atlas_index(counts).and_then(kind_for_atlas_index)
+    let kind = dominant_atlas_index(counts).and_then(kind_for_atlas_index);
+    let height = sum
+        .checked_div(count)
+        .map(|average| average as u16)
+        .unwrap_or(crate::simulation::SEA_LEVEL);
+    (kind, height)
 }
 
 /// Выбирает самый частый индекс тайла; при равенстве — меньший индекс.

@@ -13,6 +13,7 @@ mod crafts;
 mod crops;
 mod entities;
 mod generation;
+mod heightmap;
 mod item_entity;
 mod player;
 mod rendering;
