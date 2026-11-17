@@ -74,7 +74,7 @@ pub struct ResourceDeposit {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Chunk {
     pub terrain: TerrainTiles,
-    /// Высоты тайлов 0..4095 (точные, сжаты по чанку).
+    /// Высоты тайлов 0..255 (0 — океан/море по умолчанию).
     pub heights: Heightmap,
     /// Ресурсы по линейному индексу тайла 0..256.
     pub resources: HashMap<u8, ResourceDeposit>,

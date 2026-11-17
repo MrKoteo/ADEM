@@ -1,21 +1,43 @@
 //! Тесты мира: чанки, слои (рельеф/ресурсы/объекты) и размер мира.
 
 use crate::simulation::chunk::{CHUNK_TILES, Chunk, TerrainTiles};
+use crate::simulation::heightmap::{Heightmap, SEA_LEVEL};
 use crate::simulation::tile::TileType;
 use crate::simulation::world::{World, WorldSize};
 
 // Запись и чтение рельефа и ресурса идут через одни и те же слои без перекосов.
 //#[test]
 
-/// Пустой чанк: рельеф Empty в любой позиции, ресурсов и объектов нет.
+/// Пустой чанк: рельеф Empty в любой позиции, ресурсов и объектов нет,
+/// высота по умолчанию — уровень моря (океан).
 #[test]
 fn chunk_empty_by_default() {
     let c = Chunk::empty();
     for idx in 0..CHUNK_TILES {
         assert_eq!(c.terrain.get(idx), TileType::Empty);
+        assert_eq!(c.heights.get(idx), SEA_LEVEL);
     }
+    assert_eq!(c.heights.uniform_value(), Some(SEA_LEVEL));
     assert!(c.resources.is_empty());
     assert!(c.objects.is_empty());
+}
+
+/// Слой высот разворачивается в плотный массив при первой правке и
+/// схлопывается обратно, когда все тайлы снова сравнялись.
+#[test]
+fn chunk_heights_compress_and_expand() {
+    let mut c = Chunk::empty();
+    c.heights = Heightmap::uniform(SEA_LEVEL);
+    c.heights.set(5, 7);
+    assert!(matches!(c.heights, Heightmap::Full(_)));
+    assert_eq!(c.heights.get(5), 7);
+    assert_eq!(c.heights.get(6), SEA_LEVEL);
+    assert!(c.heights.memory_bytes() > 0);
+
+    c.heights.set(5, SEA_LEVEL);
+    c.heights.try_compress();
+    assert!(matches!(c.heights, Heightmap::Uniform(SEA_LEVEL)));
+    assert_eq!(c.heights.memory_bytes(), 0);
 }
 
 /// Рельеф чанка разворачивается из Uniform в Full при первом отличии

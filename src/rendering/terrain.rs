@@ -1433,8 +1433,8 @@ pub(crate) fn lod_transition_for(
 pub(crate) struct BlockMeshScratch {
     counts: Vec<u32>,
     kinds: Vec<Option<TileType>>,
-    /// Высоты ячеек блока (в уровнях 0..4095), параллельно `kinds`.
-    heights: Vec<u16>,
+    /// Высоты ячеек блока (в уровнях 0..255), параллельно `kinds`.
+    heights: Vec<u8>,
     /// Множество затронутых блоков при dirty-перестройке (не выделяется
     /// на каждую правку тайла).
     blocks: HashSet<BlockPos>,
@@ -1807,10 +1807,10 @@ fn atlas_uv_coordinates(uv: [f32; 4]) -> [[f32; 2]; 4] {
     [[u0, v1], [u1, v1], [u1, v0], [u0, v0]]
 }
 
-/// Средняя высота ячейки LOD в уровнях 0..4095. Для LOD 0 это высота
+/// Средняя высота ячейки LOD в уровнях 0..255. Для LOD 0 это высота
 /// самого тайла; для дальних ячеек — среднее по тайлам, как и вид ячейки.
 /// За пределами мира — уровень моря, чтобы у края не появлялся обрыв.
-fn cell_height(world: &World, x0: i32, y0: i32, cell: i32, world_tiles: i32) -> u16 {
+fn cell_height(world: &World, x0: i32, y0: i32, cell: i32, world_tiles: i32) -> u8 {
     let chunk_side = CHUNK_SIZE as i32;
     // Ячейка целиком в одном чанке: читаем слой напрямую, без split_tile.
     if cell <= chunk_side
@@ -1840,7 +1840,7 @@ fn cell_height(world: &World, x0: i32, y0: i32, cell: i32, world_tiles: i32) -> 
                 count += 1;
             }
         }
-        return (sum / count.max(1)) as u16;
+        return (sum / count.max(1)) as u8;
     }
     // Крупная ячейка пересекает чанки (или край мира).
     let mut sum = 0_u32;
@@ -1857,7 +1857,7 @@ fn cell_height(world: &World, x0: i32, y0: i32, cell: i32, world_tiles: i32) -> 
         }
     }
     sum.checked_div(count)
-        .map(|average| average as u16)
+        .map(|average| average as u8)
         .unwrap_or(crate::simulation::SEA_LEVEL)
 }
 /// Вид и средняя высота ячейки LOD. Оба слоя читаются одним проходом:
@@ -1870,7 +1870,7 @@ fn cell_surface(
     cell: i32,
     world_tiles: i32,
     counts: &mut [u32],
-) -> (Option<TileType>, u16) {
+) -> (Option<TileType>, u8) {
     let chunk_side = CHUNK_SIZE as i32;
     // Ячейка LOD 0–4 (1–16 тайлов) целиком лежит в одном чанке: берём
     // `TerrainTiles`/`Heightmap` один раз и читаем тайлы напрямую.
@@ -1908,7 +1908,7 @@ fn cell_surface(
                 }
             }
             let count = (cell * cell) as u32;
-            return (tile_atlas_index(kind).map(|_| kind), (sum / count.max(1)) as u16);
+            return (tile_atlas_index(kind).map(|_| kind), (sum / count.max(1)) as u8);
         }
 
         counts.fill(0);
@@ -1930,7 +1930,7 @@ fn cell_surface(
             }
         }
         let kind = dominant_atlas_index(counts).and_then(kind_for_atlas_index);
-        let height = height_uniform.unwrap_or_else(|| (sum / count.max(1)) as u16);
+        let height = height_uniform.unwrap_or_else(|| (sum / count.max(1)) as u8);
         return (kind, height);
     }
 
@@ -1955,7 +1955,7 @@ fn cell_surface(
     let kind = dominant_atlas_index(counts).and_then(kind_for_atlas_index);
     let height = sum
         .checked_div(count)
-        .map(|average| average as u16)
+        .map(|average| average as u8)
         .unwrap_or(crate::simulation::SEA_LEVEL);
     (kind, height)
 }

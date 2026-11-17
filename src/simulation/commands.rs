@@ -11,7 +11,7 @@ use super::crafts::CraftBook;
 use super::crops::CropKind;
 use super::dirty::DirtyTiles;
 use super::entities::{EntityKind, HumanMind};
-use super::heightmap::HEIGHT_MAX;
+use super::heightmap::{HEIGHT_MAX, SEA_LEVEL};
 use super::items::{ItemKind, SlotRef, ItemStack, MAX_STACK, MISC_SLOTS};
 use super::objects::{BuildingKind, WorldObject};
 use super::scheduler::{Scheduler, TaskKind};
@@ -26,7 +26,7 @@ pub enum Command {
     /// Инструмент «бога»: сменить рельеф тайла.
     SetTerrain { pos: TilePos, kind: TileType },
     /// Инструмент «бога»: поднять/опустить высоту тайла на `delta`
-    /// (результат зажимается в 0..4095). Тип рельефа не меняется.
+    /// (результат зажимается в 0..255). Тип рельефа не меняется.
     AddHeight { pos: TilePos, delta: i32 },
     /// Инструмент «бога»: поставить среднюю высоту восьми соседей.
     SmoothHeight { pos: TilePos },
@@ -170,10 +170,10 @@ impl CommandQueue {
                 }
                 Command::AddHeight { pos, delta } => {
                     if in_bounds(world, pos) {
-                        let current = i32::from(world.height(pos).unwrap_or(0));
+                        let current = i32::from(world.height(pos).unwrap_or(SEA_LEVEL));
                         let next = current
                             .saturating_add(delta)
-                            .clamp(0, i32::from(HEIGHT_MAX)) as u16;
+                            .clamp(0, i32::from(HEIGHT_MAX)) as u8;
                         if world.set_height(pos, next) {
                             dirty.terrain(pos);
                         }
@@ -202,7 +202,7 @@ impl CommandQueue {
                         }
                         if count > 0 {
                             let next = ((sum + count / 2) / count)
-                                .clamp(0, i32::from(HEIGHT_MAX)) as u16;
+                                .clamp(0, i32::from(HEIGHT_MAX)) as u8;
                             if world.set_height(pos, next) {
                                 dirty.terrain(pos);
                             }

@@ -1,43 +1,70 @@
-//! Рельеф: базовое поле высот, кривая высот и термальная эрозия.
+//! Рельеф: базовое поле высот, кривая высот, сглаживание и термальная эрозия.
 //!
-//! `HeightField` — временный рабочий буфер генерации (2 Б/тайл). Он живёт
-//! только в фоновом потоке и освобождается до установки мира, поэтому
-//! постоянная память чанков не растёт.
+//! Внутри генерации высоты хранятся в `u16` с шагом `HEIGHT_SUB` подуровней
+//! на один уровень финального слоя `u8`. Это позволяет сглаживать и
+//! эродировать рельеф **до** квантования: в чанки попадают уже плавные
+//! высоты, без локальных «заплаток» и обрывов на границе обработки.
+//!
+//! `HeightField` — временный буфер (2 Б/тайл). Он живёт только в фоновом
+//! потоке и освобождается до установки мира.
+//!
+//! Океан и море — всегда `SEA_LEVEL = 0`: всё, что ниже `ELEV_SEA`,
+//! генератор сразу кладёт на 0. Отдельная карта `sea_depth` нужна только
+//! чтобы отличить подводные впадины от суши.
 
-use crate::simulation::noise::{fbm, hash64, ridge_noise, smoothstep, value_noise};
 use crate::simulation::heightmap::{HEIGHT_MAX, SEA_LEVEL};
+use crate::simulation::noise::{fbm, hash64, ridge_noise, smoothstep, value_noise};
+
+/// Подуровней на один уровень финального `u8`-слоя.
+pub(crate) const HEIGHT_SUB: u16 = 16;
+/// Максимум поля высот генерации (255 * 16).
+pub(crate) const HEIGHT_MAX_SUB: u16 = HEIGHT_MAX as u16 * HEIGHT_SUB;
+/// Подуровней на один уровень — удобный множитель для констант.
+const fn sub(levels: u8) -> u16 {
+    levels as u16 * HEIGHT_SUB
+}
 
 /// Уровень моря: ниже — мелководье, выше — суша.
 pub(crate) const ELEV_SEA: f32 = 0.42;
-/// Опорная точка камня. Выше старого порога: классификация теперь идёт по
-/// итоговой высоте, поэтому камень/горы должны занимать разумную долю суши.
+/// Опорная точка камня.
 pub(crate) const ELEV_STONE: f32 = 0.68;
 /// Опорная точка гор.
 pub(crate) const ELEV_MOUNTAIN: f32 = 0.72;
 /// Опорная точка высокогорья.
 pub(crate) const ELEV_HIGH: f32 = 0.86;
 
-/// Абсолютные пороги высоты (фиксированные для всех карт).
-/// Море — 2 тайла, камень — 14 тайлов, горы — 34 тайла, снеговая линия —
-/// 72 тайла при `HEIGHT_WORLD_UNIT = 0.5`.
-pub(crate) const STONE_HEIGHT: u16 = 448;
-pub(crate) const MOUNTAIN_HEIGHT: u16 = 1088;
-pub(crate) const SNOW_HEIGHT: u16 = 2304;
-/// Ширина пляжной полосы над локальным уровнем воды, уровней.
-pub(crate) const BEACH_BAND: u16 = 8;
+/// Абсолютные пороги высоты (фиксированные для всех карт), уровней слоя.
+/// Визуально (при `HEIGHT_WORLD_UNIT = 1`): камень — 24 юнита (1.5 тайла),
+/// горы — 65 (≈4 тайла), снеговая линия — 142 (≈8.9 тайла), максимум — 255
+/// (≈16 тайлов).
+pub(crate) const STONE_HEIGHT: u8 = 24;
+pub(crate) const MOUNTAIN_HEIGHT: u8 = 65;
+#[allow(dead_code)] // используется тестами кривой высот и комментарием шейдера
+pub(crate) const SNOW_HEIGHT: u8 = 142;
 /// Верхняя граница леса, уровней.
-pub(crate) const TREE_LINE: u16 = 1600;
+pub(crate) const TREE_LINE: u8 = 97;
+/// Ширина пляжной полосы над локальным уровнем воды, уровней.
+pub(crate) const BEACH_BAND: u8 = 2;
 
-/// Опорные точки перевода шумовой высоты `[0, 1]` в высоты слоя.
-/// Море — 64 уровня (2 тайла), рельеф выше моря растянут примерно в 5 раз
-/// относительно старой карты.
-const HEIGHT_STOPS: [(f32, f32); 6] = [
+/// Те же пороги в подуровнях генерации.
+pub(crate) const STONE_HEIGHT_SUB: u16 = sub(STONE_HEIGHT);
+pub(crate) const TREE_LINE_SUB: u16 = sub(TREE_LINE);
+pub(crate) const BEACH_BAND_SUB: u16 = sub(BEACH_BAND);
+
+/// Опорные точки перевода шумовой высоты `[0, 1]` в подуровни высот.
+///
+/// Ниже `ELEV_SEA` — 0 (океан). Сразу над уровнем моря добавлен пологий
+/// «шельф»: первые проценты высоты дают 1–2 уровня, поэтому песчаные и
+/// земляные берега получаются плавными, а не обрывом на всю высоту.
+const HEIGHT_STOPS: [(f32, f32); 8] = [
     (0.0, 0.0),
-    (ELEV_SEA, SEA_LEVEL as f32),
-    (ELEV_STONE, STONE_HEIGHT as f32),
-    (ELEV_MOUNTAIN, MOUNTAIN_HEIGHT as f32),
-    (ELEV_HIGH, SNOW_HEIGHT as f32),
-    (1.0, HEIGHT_MAX as f32),
+    (ELEV_SEA, 0.0),
+    (ELEV_SEA + 0.03, 2.0 * HEIGHT_SUB as f32),
+    (ELEV_SEA + 0.08, 6.0 * HEIGHT_SUB as f32),
+    (ELEV_STONE, 24.0 * HEIGHT_SUB as f32),
+    (ELEV_MOUNTAIN, 65.0 * HEIGHT_SUB as f32),
+    (ELEV_HIGH, 142.0 * HEIGHT_SUB as f32),
+    (1.0, HEIGHT_MAX_SUB as f32),
 ];
 
 /// Масштаб континентального шума, тайлов на клетку.
@@ -68,7 +95,7 @@ impl MapArchetype {
     }
 }
 
-/// Временное поле высот генерации, row-major.
+/// Временное поле высот генерации, row-major, в подуровнях.
 pub(crate) struct HeightField {
     width: usize,
     data: Vec<u16>,
@@ -89,28 +116,43 @@ impl HeightField {
 
     #[inline]
     pub(crate) fn set_index(&mut self, index: usize, height: u16) {
-        self.data[index] = height.min(HEIGHT_MAX);
+        self.data[index] = height.min(HEIGHT_MAX_SUB);
     }
 
     pub(crate) fn data(&self) -> &[u16] {
         &self.data
     }
+
+    pub(crate) fn data_mut(&mut self) -> &mut [u16] {
+        &mut self.data
+    }
 }
 
-/// Переводит шумовую высоту тайла в единицы слоя высот (0..4095).
+/// Переводит шумовую высоту тайла в подуровни слоя высот (0..4080).
 /// Непрерывна, поэтому на границах полос нет скачков.
-pub(crate) fn height_for_elevation(elevation: f32) -> u16 {
+pub(crate) fn height_for_elevation_sub(elevation: f32) -> u16 {
     let elevation = elevation.clamp(0.0, 1.0);
     for pair in HEIGHT_STOPS.windows(2) {
         let (e0, h0) = pair[0];
         let (e1, h1) = pair[1];
         if elevation <= e1 {
-            let t = if e1 > e0 { (elevation - e0) / (e1 - e0) } else { 0.0 };
+            let t = if e1 > e0 {
+                (elevation - e0) / (e1 - e0)
+            } else {
+                0.0
+            };
             let height = h0 + (h1 - h0) * t;
-            return height.round().clamp(0.0, HEIGHT_MAX as f32) as u16;
+            return height.round().clamp(0.0, HEIGHT_MAX_SUB as f32) as u16;
         }
     }
-    HEIGHT_MAX
+    HEIGHT_MAX_SUB
+}
+
+/// Публичная кривая в уровнях финального слоя (для тестов и диагностики).
+#[allow(dead_code)]
+pub(crate) fn height_for_elevation(elevation: f32) -> u8 {
+    let sub = height_for_elevation_sub(elevation);
+    ((sub + HEIGHT_SUB / 2) / HEIGHT_SUB).min(HEIGHT_MAX as u16) as u8
 }
 
 /// Высота тайла в [0, 1]: континентальный шум, domain warp, архетип карты
@@ -171,7 +213,9 @@ pub(crate) fn elevation_at_for(
             // Один континент: приподнимаем мелководные низины до прибрежной
             // равнины, иначе вокруг материка получается слишком широкий шельф.
             land = land.max(0.435 + detail * 0.04);
-            uplift *= 0.35 + 0.15 * mask;
+            // Оставляем орогенез заметным: иначе на части seed'ов материк
+            // получается совершенно плоским (ни камня, ни гор).
+            uplift *= 0.50 + 0.30 * mask;
         }
         MapArchetype::Archipelago => {
             land *= 1.08;
@@ -195,9 +239,12 @@ pub(crate) fn elevation_at(x: i32, y: i32, size: i32, seed: u64) -> f32 {
     elevation_at_for(x, y, size, seed, MapArchetype::for_seed(seed))
 }
 
-/// Заполняет поле базовыми высотами. Проверка отмены — раз в строку.
+/// Заполняет поле базовыми высотами. Всё ниже уровня моря сразу получает
+/// `SEA_LEVEL` (0), а `sea_depth` запоминает глубину по исходной высоте.
+/// Проверка отмены — раз в строку.
 pub(crate) fn fill_base_heights(
     field: &mut HeightField,
+    sea_depth: &mut [u8],
     size: i32,
     seed: u64,
     archetype: MapArchetype,
@@ -210,31 +257,105 @@ pub(crate) fn fill_base_heights(
         }
         let row = y as usize * width;
         for x in 0..size {
+            let index = row + x as usize;
             let elevation = elevation_at_for(x, y, size, seed, archetype);
-            field.data[row + x as usize] = height_for_elevation(elevation);
+            if elevation <= ELEV_SEA {
+                // Океан/море плоские по построению: никакого BFS-выравнивания.
+                sea_depth[index] = (((ELEV_SEA - elevation) / ELEV_SEA) * HEIGHT_MAX as f32)
+                    .round()
+                    .clamp(1.0, HEIGHT_MAX as f32) as u8;
+                field.data[index] = SEA_LEVEL as u16;
+            } else {
+                sea_depth[index] = 0;
+                // Суша не бывает на высоте моря: 0 зарезервирован под воду.
+                field.data[index] = height_for_elevation_sub(elevation).max(HEIGHT_SUB);
+            }
         }
     }
     true
 }
 
-/// Максимальный перепад между соседями для термальной эрозии, уровней.
-/// 16 уровней = 8 юнитов = 0.5 тайла по горизонтали: равнины сглаживаются,
-/// а горы сохраняют склоны.
-const THERMAL_TALUS: i32 = 16;
-/// Число проходов термальной эрозии.
-const THERMAL_PASSES: u32 = 4;
+/// Сколько проходов сглаживания делать до квантования.
+const SMOOTH_PASSES: u32 = 3;
 
-/// Термальная эрозия: осыпи на слишком крутых склонах. Детерминирована:
-/// пары соседей обрабатываются один раз (вправо/вниз), изменения копятся в
-/// scratch и применяются после прохода.
-pub(crate) fn erode_thermal(
+/// Глобальное сглаживание поля высот: сепарабельный биномиальный фильтр
+/// (1-2-1) по горизонтали и вертикали. Вода считается нулём, поэтому
+/// прибрежная суша плавно опускается к уровню воды. Операция глобальная —
+/// у неё нет границы, на которой мог бы появиться обрыв.
+pub(crate) fn smooth_heights(
     field: &mut HeightField,
+    sea_depth: &[u8],
     size: i32,
     cancelled: &dyn Fn() -> bool,
 ) -> bool {
     let width = size as usize;
-    // Суммарный сдвиг за проход ограничен: максимум ~4·(4095−TALUS)/2,
-    // поэтому i16 достаточно и вдвое дешевле i32 по памяти.
+    let mut tmp = vec![0_u16; width * width];
+    for _ in 0..SMOOTH_PASSES {
+        // Горизонтальный проход.
+        for y in 0..size {
+            if cancelled() {
+                return false;
+            }
+            let row = y as usize * width;
+            for x in 0..size {
+                let index = row + x as usize;
+                if sea_depth[index] != 0 {
+                    tmp[index] = 0;
+                    continue;
+                }
+                let left = if x > 0 { field.data[index - 1] } else { field.data[index] };
+                let right = if x + 1 < size {
+                    field.data[index + 1]
+                } else {
+                    field.data[index]
+                };
+                tmp[index] = ((left + 2 * field.data[index] + right + 2) / 4).max(HEIGHT_SUB);
+            }
+        }
+        // Вертикальный проход (из tmp обратно в field).
+        for y in 0..size {
+            if cancelled() {
+                return false;
+            }
+            let row = y as usize * width;
+            for x in 0..size {
+                let index = row + x as usize;
+                if sea_depth[index] != 0 {
+                    field.data[index] = 0;
+                    continue;
+                }
+                let top = if y > 0 { tmp[index - width] } else { tmp[index] };
+                let bottom = if y + 1 < size {
+                    tmp[index + width]
+                } else {
+                    tmp[index]
+                };
+                field.data[index] =
+                    ((top + 2 * tmp[index] + bottom + 2) / 4).max(HEIGHT_SUB);
+            }
+        }
+    }
+    true
+}
+
+/// Максимальный перепад между соседями для термальной эрозии, подуровней.
+/// 1 уровень финального слоя (16 подуровней) — склоны мягче одного уровня
+/// не трогаем, более крутые осыпаются.
+const THERMAL_TALUS_SUB: i32 = HEIGHT_SUB as i32;
+/// Число проходов термальной эрозии.
+const THERMAL_PASSES: u32 = 3;
+
+/// Термальная эрозия: осыпи на слишком крутых склонах. Детерминирована:
+/// пары соседей обрабатываются один раз (вправо/вниз), изменения копятся в
+/// scratch и применяются после прохода. Вода (`sea_depth > 0`) не участвует
+/// и всегда остаётся на `SEA_LEVEL`.
+pub(crate) fn erode_thermal(
+    field: &mut HeightField,
+    sea_depth: &[u8],
+    size: i32,
+    cancelled: &dyn Fn() -> bool,
+) -> bool {
+    let width = size as usize;
     let mut scratch = vec![0_i16; width * width];
     for _ in 0..THERMAL_PASSES {
         scratch.fill(0);
@@ -245,32 +366,43 @@ pub(crate) fn erode_thermal(
             let row = y as usize * width;
             for x in 0..size {
                 let index = row + x as usize;
+                if sea_depth[index] != 0 {
+                    continue;
+                }
                 let height = field.data[index] as i32;
                 // Правый сосед.
                 if x + 1 < size {
                     let neighbor = index + 1;
-                    let diff = height - field.data[neighbor] as i32;
-                    if diff > THERMAL_TALUS {
-                        let shift = ((diff - THERMAL_TALUS) / 2) as i16;
-                        scratch[index] -= shift;
-                        scratch[neighbor] += shift;
+                    if sea_depth[neighbor] == 0 {
+                        let diff = height - field.data[neighbor] as i32;
+                        if diff > THERMAL_TALUS_SUB {
+                            let shift = ((diff - THERMAL_TALUS_SUB) / 2) as i16;
+                            scratch[index] -= shift;
+                            scratch[neighbor] += shift;
+                        }
                     }
                 }
                 // Нижний сосед.
                 if y + 1 < size {
                     let neighbor = index + width;
-                    let diff = height - field.data[neighbor] as i32;
-                    if diff > THERMAL_TALUS {
-                        let shift = ((diff - THERMAL_TALUS) / 2) as i16;
-                        scratch[index] -= shift;
-                        scratch[neighbor] += shift;
+                    if sea_depth[neighbor] == 0 {
+                        let diff = height - field.data[neighbor] as i32;
+                        if diff > THERMAL_TALUS_SUB {
+                            let shift = ((diff - THERMAL_TALUS_SUB) / 2) as i16;
+                            scratch[index] -= shift;
+                            scratch[neighbor] += shift;
+                        }
                     }
                 }
             }
         }
         for (index, &delta) in scratch.iter().enumerate() {
+            if sea_depth[index] != 0 {
+                field.data[index] = SEA_LEVEL as u16;
+                continue;
+            }
             let value = field.data[index] as i32 + delta as i32;
-            field.data[index] = value.clamp(0, HEIGHT_MAX as i32) as u16;
+            field.data[index] = value.clamp(HEIGHT_SUB as i32, HEIGHT_MAX_SUB as i32) as u16;
         }
     }
     true

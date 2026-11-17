@@ -4,11 +4,11 @@ import bevy_pbr::render::{
 };
 
 // Пороговые высоты в мировых единицах. Дублируют константы симуляции:
-// SEA_LEVEL=64, STONE_HEIGHT=448, SNOW_HEIGHT=2304 при HEIGHT_WORLD_UNIT=0.5.
-// При тюнинге высот обновлять вместе с `simulation/heightmap.rs`.
-const TERRAIN_ROCK_HEIGHT: f32 = 224.0;
-const TERRAIN_SNOW_HEIGHT: f32 = 1152.0;
-const TERRAIN_MAX_HEIGHT: f32 = 2047.5;
+// STONE_HEIGHT=24, SNOW_HEIGHT=142 при HEIGHT_WORLD_UNIT=1.
+// При тюнинге высот обновлять вместе с `simulation/generation/height.rs`.
+const TERRAIN_ROCK_HEIGHT: f32 = 24.0;
+const TERRAIN_SNOW_HEIGHT: f32 = 142.0;
+const TERRAIN_MAX_HEIGHT: f32 = 255.0;
 
 @fragment
 fn fragment(

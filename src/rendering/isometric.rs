@@ -9,11 +9,10 @@ use crate::simulation::{TilePos, TileType, World, TILE_SIZE};
 /// reproduces the previous 2:1 isometric diamond.
 pub(crate) const WORLD_TILE_SIZE: f32 = TILE_SIZE * std::f32::consts::SQRT_2;
 
-/// Мировые единицы на один уровень высоты. 2 уровня = 1 мировой юнит =
-/// 1 тексель при масштабе 1:1; полный диапазон 0..4095 даёт 2047.5 юнита
-/// (128 тайлов) амплитуды. Рендер не квантует высоты: каждый уровень
-/// рисуется отдельно (1 уровень = 0.5 текселя).
-pub(crate) const HEIGHT_WORLD_UNIT: f32 = TILE_SIZE / 32.0;
+/// Мировые единицы на один уровень высоты. 1 уровень = 1/16 тайла
+/// (1 мировой юнит); полный диапазон 0..255 даёт 255 юнитов (≈16 тайлов).
+/// Рендер не квантует высоты: каждый уровень рисуется отдельно.
+pub(crate) const HEIGHT_WORLD_UNIT: f32 = TILE_SIZE / 16.0;
 
 /// Верхняя граница рельефа в мировых единицах (для отсечения блоков).
 pub(crate) const MAX_WORLD_HEIGHT: f32 = HEIGHT_MAX as f32 * HEIGHT_WORLD_UNIT;
@@ -23,10 +22,9 @@ pub(crate) const SEA_WORLD_HEIGHT: f32 = SEA_LEVEL as f32 * HEIGHT_WORLD_UNIT;
 
 /// Высота слоя в мировых единицах. Все потребители — меш, пикинг, спрайты,
 /// камера — обязаны использовать эту функцию, иначе объекты «поплывут»
-/// относительно поверхности. Квантования нет: данные точные и рендерятся
-/// с шагом 1 уровень = 0.5 текселя.
+/// относительно поверхности.
 #[inline]
-pub(crate) fn height_to_world(level: u16) -> f32 {
+pub(crate) fn height_to_world(level: u8) -> f32 {
     level as f32 * HEIGHT_WORLD_UNIT
 }
 

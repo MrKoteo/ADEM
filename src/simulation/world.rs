@@ -3,12 +3,12 @@
 use std::collections::HashMap;
 
 use super::chunk::{Chunk, ResourceDeposit, TerrainTiles, CHUNK_SIZE};
-use super::climate::ClimateMap;
+use super::climate::{build_climate_maps, ClimateMap, MoistureMap};
 use super::combat::{Projectile, StuckSpear};
 use super::containers::Container;
 use super::crops::Crop;
 use super::entities::{EntityStore, FaunaScratch, LandSearchScratch};
-use super::heightmap::{HEIGHT_MAX, SEA_LEVEL};
+use super::heightmap::SEA_LEVEL;
 use super::item_entity::{ItemEntities, ItemEntity, ItemScratch};
 use super::items::ItemStack;
 use super::objects::WorldObject;
@@ -109,6 +109,9 @@ pub struct World {
     /// Базовая карта температуры (широта + крупный шум) по ячейке 2×2.
     /// Не сохраняется: детерминирована seed; высота применяется при чтении.
     pub climate: ClimateMap,
+    /// Карта влажности по ячейке 2×2 (`u8`, 0..255). Генерация учитывает
+    /// прибрежную добавку, поэтому карта сохраняется вместе с миром.
+    pub moisture: MoistureMap,
     /// Снаряды в полёте (стрелы, брошенные копья) — см. `combat`.
     pub projectiles: Vec<Projectile>,
     /// Копья, воткнувшиеся в землю; живут до подбора игроком.
@@ -200,6 +203,7 @@ impl World {
         bytes += (self.item_entities.len() as u64) * size_of::<ItemEntity>();
         bytes += map_bytes::<TilePos, BuildingBreak>(self.building_breaks.len());
         bytes += self.climate.memory_bytes();
+        bytes += self.moisture.memory_bytes();
         bytes
     }
 
@@ -207,6 +211,7 @@ impl World {
     pub fn new(size: WorldSize, seed: u64) -> Self {
         let cps = Self::chunks_per_side(size);
         let chunks = (0..cps * cps).map(|_| Chunk::empty()).collect();
+        let (climate, moisture) = build_climate_maps(size.tiles(), seed);
         Self {
             size,
             seed,
@@ -214,7 +219,8 @@ impl World {
             chunks,
             entities: EntityStore::default(),
             ambient_temperature_c: 24.0,
-            climate: ClimateMap::new(size.tiles(), seed),
+            climate,
+            moisture,
             projectiles: Vec::new(),
             stuck_spears: Vec::new(),
             next_projectile_id: 0,
@@ -271,10 +277,10 @@ impl World {
         self.chunk_mut(cpos).terrain.set(idx as usize, kind);
     }
 
-    /// Точная высота тайла (0..4095). `None` — позиция вне мира.
+    /// Точная высота тайла (0..255). `None` — позиция вне мира.
     /// Высоты хранятся слоем чанка и не зависят от вида рельефа.
     #[inline]
-    pub fn height(&self, pos: TilePos) -> Option<u16> {
+    pub fn height(&self, pos: TilePos) -> Option<u8> {
         let side = self.size.tiles() as i32;
         if pos.x < 0 || pos.y < 0 || pos.x >= side || pos.y >= side {
             return None;
@@ -285,7 +291,7 @@ impl World {
 
     /// Высота тайла или запасное значение вне мира.
     #[inline]
-    pub fn height_or(&self, pos: TilePos, fallback: u16) -> u16 {
+    pub fn height_or(&self, pos: TilePos, fallback: u8) -> u8 {
         self.height(pos).unwrap_or(fallback)
     }
 
@@ -299,15 +305,20 @@ impl World {
 
     /// Записывает высоту тайла. Возвращает `true`, если значение изменилось.
     /// Смена высоты не меняет вид рельефа: это независимые слои.
-    pub fn set_height(&mut self, pos: TilePos, height: u16) -> bool {
+    pub fn set_height(&mut self, pos: TilePos, height: u8) -> bool {
         let side = self.size.tiles() as i32;
         if pos.x < 0 || pos.y < 0 || pos.x >= side || pos.y >= side {
             return false;
         }
         let (cpos, idx) = split_tile_pos(pos);
-        self.chunk_mut(cpos)
-            .heights
-            .set(idx as usize, height.min(HEIGHT_MAX))
+        let heights = &mut self.chunk_mut(cpos).heights;
+        let changed = heights.set(idx as usize, height);
+        if changed {
+            // Правка могла выровнять весь чанк: схлопываем в Uniform сразу,
+            // чтобы слой не оставался плотным после кисти высот.
+            heights.try_compress();
+        }
+        changed
     }
 
     /// Меняет ресурс тайла; `None` или нулевое количество убирает запись —

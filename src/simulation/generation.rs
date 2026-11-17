@@ -2,21 +2,21 @@
 //!
 //! Схема:
 //! 1. Базовое поле высот: архетип карты из seed, domain warp, континенты,
-//!    гребневый шум гор и спад к краям.
-//! 2. Термальная эрозия: сглаживает слишком крутые склоны.
-//! 3. Гидрология: бессточное заполнение депрессий, водосборы, реки, озёра
-//!    и море. Уровни воды согласованы с локальным рельефом.
-//! 4. Классификация: тип тайла выводится из итоговой высоты, климата чанка
-//!    и воды. Пляжи — по близости к воде.
+//!    гребневый шум гор и спад к краям. Всё ниже уровня моря сразу получает
+//!    0 — океан/море плоские без постобработки.
+//! 2. Сглаживание и термальная эрозия: плавные склоны, пологие берега.
+//! 3. Гидрология: бессточное заполнение депрессий, водосборы, реки, озёра.
+//!    BFS-выравнивание осталось только у озёр (у моря высота уже 0).
+//! 4. Классификация: тип тайла выводится из итоговой высоты, климата
+//!    (температура и влажность — постоянные карты 2×2) и воды.
 //! 5. Объекты, ресурсы и дикая природа — отдельными RNG-потоками.
 //!
-//! `HeightField` — временный буфер генерации (2 Б/тайл); в чанки он
+//! `HeightField` — временный буфер генерации (1 Б/тайл); в чанки он
 //! записывается один раз в конце и освобождается до установки мира.
 
 pub(crate) mod height;
+mod coast;
 mod hydrology;
-
-use std::collections::VecDeque;
 
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng}; // Bevy 0.20 / rand 0.10: RngExt вместо Rng
@@ -29,9 +29,12 @@ use super::objects::WorldObject;
 use super::tile::{ResourceKind, TileType};
 use super::world::{TilePos, World, WorldPos, WorldSize};
 
+use coast::{
+    apply_shore_ramp, apply_water_depth, limit_soil_slope, raise_land_above_water, CoastField,
+};
 use height::{
-    erode_thermal, fill_base_heights, HeightField, MapArchetype, BEACH_BAND, MOUNTAIN_HEIGHT,
-    STONE_HEIGHT, TREE_LINE,
+    erode_thermal, fill_base_heights, smooth_heights, HeightField, MapArchetype, BEACH_BAND_SUB,
+    HEIGHT_SUB, MOUNTAIN_HEIGHT, STONE_HEIGHT, TREE_LINE_SUB,
 };
 use hydrology::{build_hydrology, WaterKind};
 use super::noise::{fbm, smoothstep};
@@ -45,10 +48,6 @@ const MOSS_SCALE: f32 = 20.0;
 const MOSS_THRESHOLD: f32 = 0.62;
 /// Максимальная ширина пляжа от воды, тайлов.
 const BEACH_MAX_DIST: u8 = 2;
-/// Предел BFS расстояния до воды для прибрежной влажности, ячеек 2×2.
-const COAST_MAX_CELLS: u8 = 16;
-
-const NEIGHBORS_4: [(i32, i32); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
 
 /// Сгенерировать мир: рельеф + вода + ресурсы + объекты + существа.
 #[allow(dead_code)] // синхронный вариант для тестов; игра идёт через cancellable
@@ -68,15 +67,34 @@ pub fn generate_world_cancellable(
     let archetype = MapArchetype::for_seed(seed);
 
     let mut heights = HeightField::new(n as usize);
-    if !fill_base_heights(&mut heights, n, seed, archetype, cancelled) {
+    // Глубина ниже уровня моря по исходной высоте: только для поиска моря.
+    let mut sea_depth = vec![0_u8; (n * n) as usize];
+    if !fill_base_heights(&mut heights, &mut sea_depth, n, seed, archetype, cancelled) {
         return None;
     }
-    if !erode_thermal(&mut heights, n, cancelled) {
+    // Плавность до квантования: глобальное сглаживание и эрозия в u16.
+    if !smooth_heights(&mut heights, &sea_depth, n, cancelled) {
         return None;
     }
-    let water = build_hydrology(&mut heights, n, cancelled)?;
+    if !erode_thermal(&mut heights, &sea_depth, n, cancelled) {
+        return None;
+    }
+    let mut water = build_hydrology(&mut heights, &sea_depth, n, cancelled)?;
+    // Единая карта берега: расстояние до воды/суши, уровень и вид ближайшей
+    // воды. Используется глубиной, пляжами, влажностью и береговым пандусом.
+    let coast = CoastField::build(&heights, &water, n, cancelled)?;
+    apply_water_depth(&mut water, &coast);
+    if !apply_shore_ramp(&mut heights, &coast, n, cancelled) {
+        return None;
+    }
+    if !limit_soil_slope(&mut heights, &water, n, cancelled) {
+        return None;
+    }
+    if !raise_land_above_water(&mut heights, &water, n, cancelled) {
+        return None;
+    }
 
-    if !classify_and_write(&mut world, &heights, &water, seed, cancelled) {
+    if !classify_and_write(&mut world, &heights, &water, &coast, seed, cancelled) {
         return None;
     }
     if !place_content(&mut world, &heights, seed, cancelled) {
@@ -108,18 +126,31 @@ fn classify_and_write(
     world: &mut World,
     heights: &HeightField,
     water: &[WaterKind],
+    coast: &CoastField,
     seed: u64,
     cancelled: &dyn Fn() -> bool,
 ) -> bool {
     let n = world.size.tiles() as i32;
     let width = n as usize;
     let chunks_per_side = world.chunks_per_side as usize;
-    let Some(beach) = mark_beaches(heights, water, n, cancelled) else {
+    let Some(beach) = build_beaches(heights, water, coast, n, cancelled) else {
         return false;
     };
-    let coast = build_coast_distance(water, n);
-    let biomes = build_biome_map(n, seed, heights, &coast);
+    // Прибрежная добавка влажности — по ячейкам 2×2, как и карта влажности.
+    let cell = CLIMATE_CELL_TILES as usize;
+    let side = (n as usize).div_ceil(cell);
+    let mut coastal = vec![0.0_f32; side * side];
+    for cy in 0..side {
+        for cx in 0..side {
+            let x = (cx * cell + cell / 2).min(width - 1);
+            let y = (cy * cell + cell / 2).min(width - 1);
+            let distance = coast.land_distance(y * width + x) as f32;
+            coastal[cy * side + cx] = 0.18 * (1.0 - smoothstep(distance / 12.0));
+        }
+    }
+    let moss = build_moss_map(n, seed);
     let climate = &world.climate;
+    let moisture_map = &world.moisture;
 
     for cy in 0..chunks_per_side {
         if cy % 8 == 0 && cancelled() {
@@ -131,17 +162,21 @@ fn classify_and_write(
             let base_y = (cy * CHUNK_SIZE) as i32;
 
             let mut tiles = [TileType::Empty; CHUNK_TILES];
-            let mut tile_heights = [0_u16; CHUNK_TILES];
+            let mut tile_heights = [0_u8; CHUNK_TILES];
             for ly in 0..CHUNK_SIZE {
                 let y = base_y + ly as i32;
                 for lx in 0..CHUNK_SIZE {
                     let x = base_x + lx as i32;
                     let index = y as usize * width + x as usize;
                     let local = ly * CHUNK_SIZE + lx;
-                    let height = heights.get(x, y);
+                    let height_sub = heights.get(x, y);
+                    let height = quantize_height(height_sub);
                     let annual_temperature = climate.annual_temperature_c(x, y, height);
-                    let moisture = biomes.moisture_at(x, y);
-                    let moss = biomes.moss_at(x, y);
+                    let bonus = coastal[(y as usize / cell) * side + (x as usize / cell)];
+                    let moisture = (moisture_map.moisture_at(x, y) + bonus
+                        - (height as f32 / HEIGHT_MAX as f32) * 0.10)
+                        .clamp(0.0, 1.0);
+                    let moss = moss.at(x, y);
                     tile_heights[local] = height;
                     let beach = beach.kind(y as usize * width + x as usize);
                     tiles[local] = classify_tile(
@@ -163,10 +198,16 @@ fn classify_and_write(
     true
 }
 
+/// Квантует подуровни генерации в итоговый `u8` 0..255.
+#[inline]
+fn quantize_height(height: u16) -> u8 {
+    ((height + HEIGHT_SUB / 2) / HEIGHT_SUB).min(HEIGHT_MAX as u16) as u8
+}
+
 /// Тип тайла по итоговой высоте, температуре, влажности и пляжу.
 fn classify_tile(
     water: WaterKind,
-    height: u16,
+    height: u8,
     beach: BeachKind,
     annual_temperature_c: f32,
     moisture: f32,
@@ -215,95 +256,32 @@ fn classify_tile(
     }
 }
 
-/// Расстояние до воды по ячейкам 2×2, в клетках (0 — вода). BFS с
-/// ограничением `COAST_MAX_CELLS`; используется только при генерации.
-fn build_coast_distance(water: &[WaterKind], n: i32) -> Vec<u8> {
-    let cell = CLIMATE_CELL_TILES as usize;
-    let side = (n as usize).div_ceil(cell);
-    let mut distance = vec![u8::MAX; side * side];
-    let mut queue = VecDeque::new();
-    for y in 0..n {
-        for x in 0..n {
-            let index = y as usize * n as usize + x as usize;
-            if !water[index].is_water() {
-                continue;
-            }
-            let cx = x as usize / cell;
-            let cy = y as usize / cell;
-            let ci = cy * side + cx;
-            if distance[ci] != 0 {
-                distance[ci] = 0;
-                queue.push_back((cx as i32, cy as i32));
-            }
-        }
-    }
-    while let Some((cx, cy)) = queue.pop_front() {
-        let d = distance[cy as usize * side + cx as usize];
-        if d >= COAST_MAX_CELLS {
-            continue;
-        }
-        for (dx, dy) in NEIGHBORS_4 {
-            let nx = cx + dx;
-            let ny = cy + dy;
-            if nx < 0 || ny < 0 || nx >= side as i32 || ny >= side as i32 {
-                continue;
-            }
-            let ni = ny as usize * side + nx as usize;
-            if distance[ni] == u8::MAX {
-                distance[ni] = d + 1;
-                queue.push_back((nx, ny));
-            }
-        }
-    }
-    distance
-}
-
-/// Карта влажности и мха по ячейкам 2×2. Считается один раз на генерацию,
-/// поэтому дорогие fbm-вызовы не повторяются на каждый тайл.
-struct BioMap {
+/// Карта мха по ячейкам 2×2: временная, нужна только классификации.
+struct MossMap {
     side: usize,
-    moisture: Vec<u8>,
-    moss: Vec<u8>,
+    values: Vec<u8>,
 }
 
-impl BioMap {
-    fn moisture_at(&self, x: i32, y: i32) -> f32 {
-        sample_u8_map(&self.moisture, self.side, x, y) / 255.0
-    }
-
-    fn moss_at(&self, x: i32, y: i32) -> f32 {
-        sample_u8_map(&self.moss, self.side, x, y) / 255.0
+impl MossMap {
+    fn at(&self, x: i32, y: i32) -> f32 {
+        sample_u8_map(&self.values, self.side, x, y) / 255.0
     }
 }
 
-/// Строит карту влажности/мха в ячейках 2×2 (0.5 Б/тайл временно).
-fn build_biome_map(
-    n: i32,
-    seed: u64,
-    heights: &HeightField,
-    coast: &[u8],
-) -> BioMap {
+/// Строит карту мха в ячейках 2×2 (0.25 Б/тайл временно).
+fn build_moss_map(n: i32, seed: u64) -> MossMap {
     let cell = CLIMATE_CELL_TILES as usize;
     let side = (n as usize).div_ceil(cell);
-    let mut moisture = vec![0_u8; side * side];
-    let mut moss = vec![0_u8; side * side];
+    let mut values = vec![0_u8; side * side];
     for cy in 0..side {
         for cx in 0..side {
-            let x = (cx * cell + cell / 2).min(n as usize - 1) as i32;
-            let y = (cy * cell + cell / 2).min(n as usize - 1) as i32;
-            let index = cy * side + cx;
-            let height = heights.get(x, y);
-            let m = moisture_at(x, y, height, coast[index], seed);
-            let moss_value = moss_at(x, y, seed);
-            moisture[index] = (m * 255.0).round().clamp(0.0, 255.0) as u8;
-            moss[index] = (moss_value * 255.0).round().clamp(0.0, 255.0) as u8;
+            let x = (cx * cell + cell / 2).min(n as usize - 1) as f32;
+            let y = (cy * cell + cell / 2).min(n as usize - 1) as f32;
+            let value = moss_at(x, y, seed);
+            values[cy * side + cx] = (value * 255.0).round().clamp(0.0, 255.0) as u8;
         }
     }
-    BioMap {
-        side,
-        moisture,
-        moss,
-    }
+    MossMap { side, values }
 }
 
 /// Билинейная выборка из карты 0..255 по координате тайла.
@@ -325,29 +303,10 @@ fn sample_u8_map(data: &[u8], side: usize, x: i32, y: i32) -> f32 {
     top + (bottom - top) * ty
 }
 
-/// Влажность ячейки: крупные + средние пятна шума и прибрежная добавка.
-fn moisture_at(x: i32, y: i32, height: u16, coast_distance: u8, seed: u64) -> f32 {
-    let large = fbm(
-        x as f32 / 48.0 + 17.0,
-        y as f32 / 48.0 + 61.0,
-        seed ^ 0x0A01_5EED,
-        2,
-    );
-    let detail = fbm(
-        x as f32 / 16.0,
-        y as f32 / 16.0,
-        seed ^ 0x0A02_5EED,
-        2,
-    );
-    let coastal = 0.18 * (1.0 - smoothstep(coast_distance as f32 / 12.0));
-    let altitude = height as f32 / HEIGHT_MAX as f32;
-    (large * 0.72 + detail * 0.28 + coastal - altitude * 0.10).clamp(0.0, 1.0)
-}
-
 /// Мшистость тайла: мелкий шум — пятна мха, а не одиночный крап.
-fn moss_at(x: i32, y: i32, seed: u64) -> f32 {
-    let fx = x as f32 / MOSS_SCALE;
-    let fy = y as f32 / MOSS_SCALE;
+fn moss_at(x: f32, y: f32, seed: u64) -> f32 {
+    let fx = x / MOSS_SCALE;
+    let fy = y / MOSS_SCALE;
     fbm(fx + 211.0, fy + 137.0, seed ^ 0x0DD5_1DEA, 2)
 }
 
@@ -383,11 +342,6 @@ impl Beaches {
             BeachKind::None
         }
     }
-
-    #[inline]
-    fn contains(&self, index: usize) -> bool {
-        self.gravel.get(index) || self.sand.get(index)
-    }
 }
 
 /// Битовая карта пляжей: тайлы суши в пределах `BEACH_BAND` от воды.
@@ -413,78 +367,43 @@ impl BitGrid {
     }
 }
 
-/// Размечает пляжи ограниченным BFS от воды. Уровень воды передаётся в
-/// очереди, поэтому полная карта уровней не нужна.
-fn mark_beaches(
+/// Размечает пляжи по единой береговой карте: суша в пределах
+/// `BEACH_MAX_DIST` от воды и в полосе `BEACH_BAND_SUB` над её уровнем.
+fn build_beaches(
     heights: &HeightField,
     water: &[WaterKind],
+    coast: &CoastField,
     n: i32,
     cancelled: &dyn Fn() -> bool,
 ) -> Option<Beaches> {
     let width = n as usize;
     let mut beaches = Beaches::new(width);
-    let mut queue: VecDeque<(i32, i32, u16, u8, BeachKind)> = VecDeque::new();
-
     for y in 0..n {
         if y % 64 == 0 && cancelled() {
             return None;
         }
         for x in 0..n {
             let index = y as usize * width + x as usize;
-            if !water[index].is_water() {
+            if water[index].is_water() {
                 continue;
             }
-            let level = heights.get(x, y);
+            let distance = coast.land_distance(index);
+            if distance == 0 || distance > BEACH_MAX_DIST {
+                continue;
+            }
+            let level = coast.max_water_level(index);
+            let height = heights.get(x, y);
+            if height <= level || height > level + BEACH_BAND_SUB {
+                continue;
+            }
             // Берега рек — гравий, морей и озёр — песок (холод/высота
             // превратят его в гравий на классификации).
-            let kind = if water[index] == WaterKind::River {
+            let kind = if coast.max_water_kind(index) == WaterKind::River {
                 BeachKind::Gravel
             } else {
                 BeachKind::Sand
             };
-            for (dx, dy) in NEIGHBORS_4 {
-                let nx = x + dx;
-                let ny = y + dy;
-                if nx < 0 || ny < 0 || nx >= n || ny >= n {
-                    continue;
-                }
-                let ni = ny as usize * width + nx as usize;
-                if water[ni].is_water() || beaches.contains(ni) {
-                    continue;
-                }
-                let h = heights.get(nx, ny);
-                if h > level && h <= level + BEACH_BAND {
-                    mark_beach(&mut beaches, ni, kind);
-                    queue.push_back((nx, ny, level, 1, kind));
-                }
-            }
-        }
-    }
-
-    let mut steps = 0_u32;
-    while let Some((x, y, level, distance, kind)) = queue.pop_front() {
-        steps += 1;
-        if steps.is_multiple_of(65_536) && cancelled() {
-            return None;
-        }
-        if distance >= BEACH_MAX_DIST {
-            continue;
-        }
-        for (dx, dy) in NEIGHBORS_4 {
-            let nx = x + dx;
-            let ny = y + dy;
-            if nx < 0 || ny < 0 || nx >= n || ny >= n {
-                continue;
-            }
-            let ni = ny as usize * width + nx as usize;
-            if water[ni].is_water() || beaches.contains(ni) {
-                continue;
-            }
-            let h = heights.get(nx, ny);
-            if h > level && h <= level + BEACH_BAND {
-                mark_beach(&mut beaches, ni, kind);
-                queue.push_back((nx, ny, level, distance + 1, kind));
-            }
+            mark_beach(&mut beaches, index, kind);
         }
     }
     Some(beaches)
@@ -523,7 +442,7 @@ fn place_content(
                     let height = heights.get(x, y);
                     match chunk.terrain.get(idx) {
                         TileType::ForestGrass | TileType::Moss
-                            if height < TREE_LINE =>
+                            if height < TREE_LINE_SUB =>
                         {
                             let r = rng.random::<f32>();
                             let object = if r < 0.18 {
@@ -543,7 +462,7 @@ fn place_content(
                                 chunk.objects.insert(idx as u8, object);
                             }
                         }
-                        TileType::Grass if height < TREE_LINE => {
+                        TileType::Grass if height < TREE_LINE_SUB => {
                             if rng.random::<f32>() < 0.03 {
                                 chunk.objects.insert(idx as u8, WorldObject::bush());
                             }
@@ -573,7 +492,7 @@ fn place_content(
                     } else if matches!(
                         chunk.terrain.get(idx),
                         TileType::Grass | TileType::Dirt
-                    ) && height < TREE_LINE
+                    ) && height < TREE_LINE_SUB
                         && rng.random::<f32>() < 0.02
                     {
                         chunk.terrain.set(idx, TileType::Clay);

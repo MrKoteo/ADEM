@@ -16,8 +16,7 @@
 //!     chunks_per_side        u32
 //!     чанки по порядку (row-major):
 //!       рельеф:   tag u8: 0 = Uniform + TileType u8 | 1 = Full + 256 байт
-//!       высоты:   tag u8: 0 = Uniform + u16 | 1 = Packed +
-//!                 min u16 + bits u8 + ceil(256*bits/64) × u64
+//!       высоты:   tag u8: 0 = Uniform + u8 | 1 = Full + 256 байт
 //!       ресурсы:  u16 count + [index u8, kind u8, amount u16] по индексам
 //!       объекты:  u16 count + [index u8, kind u8, stage u8, charge u16]
 //!       предметы: u16 count + [index u8, kind u8, count u32] по индексам
@@ -80,8 +79,10 @@ use std::fmt;
 /// Версия 6: слой высот чанка (Heightmap).
 /// Версия 7: новая единица высоты (2 уровня = 1 тексель), новый уровень моря
 /// и генерация на основе Heightmap; новые виды тайлов Gravel, Ice и River.
-/// Сейвы v6 и старше не читаются.
-pub const SAVE_FORMAT_VERSION: u32 = 7;
+/// Версия 8: высоты — `u8` 0..255 (океан = 0), плотный слой `Uniform`/`Full`;
+/// климатические карты (температура и влажность) — seed-only, не сохраняются.
+/// Сейвы v7 и старше не читаются.
+pub const SAVE_FORMAT_VERSION: u32 = 8;
 
 /// Магия в начале файла.
 pub(super) const MAGIC: [u8; 4] = *b"ADEM";

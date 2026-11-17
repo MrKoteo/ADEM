@@ -5,7 +5,8 @@
 //! `save/mod.rs`.
 
 use crate::simulation::chunk::{TerrainTiles, CHUNK_TILES};
-use crate::simulation::heightmap::{Heightmap, PackedHeights, HEIGHT_MAX};
+use crate::simulation::climate::build_climate_maps;
+use crate::simulation::heightmap::Heightmap;
 use crate::simulation::entities::{EntityKind, EntityState, EntityStore, Facing, Gender, HumanMind, SimEntity};
 use crate::simulation::items::{
     Inventory, ItemKind, ItemStack, SlotArea, ARMOR_SLOTS, BAUBLE_SLOTS, CLOTHES_SLOTS, MISC_SLOTS,
@@ -172,6 +173,7 @@ pub fn load_game(bytes: &[u8]) -> Result<SavedGame, SaveError> {
         next_id,
         cancelled,
     });
+    let (climate, moisture) = build_climate_maps(size.tiles(), seed);
 
     Ok(SavedGame {
         seed,
@@ -183,7 +185,8 @@ pub fn load_game(bytes: &[u8]) -> Result<SavedGame, SaveError> {
             chunks,
             entities,
             ambient_temperature_c: ambient,
-            climate: crate::simulation::climate::ClimateMap::new(size.tiles(), seed),
+            climate,
+            moisture,
             projectiles,
             stuck_spears,
             next_projectile_id,
@@ -199,43 +202,17 @@ pub fn load_game(bytes: &[u8]) -> Result<SavedGame, SaveError> {
         scheduler,
     })
 }
-/// Читает слой высот чанка: Uniform или Packed. Биты упакованы в u64
-/// little-endian; битовая ширина ограничена 12, значения проверяются.
+/// Читает слой высот чанка: Uniform (u8) или Full (256 байт).
 fn read_heightmap(r: &mut Reader<'_>) -> Result<Heightmap, SaveError> {
     let tag = r.read_u8()?;
     match tag {
-        0 => {
-            let height = r.read_u16()?;
-            if height > HEIGHT_MAX {
-                return Err(SaveError::BadData("высота вне диапазона"));
-            }
-            Ok(Heightmap::uniform(height))
-        }
+        0 => Ok(Heightmap::uniform(r.read_u8()?)),
         1 => {
-            let min = r.read_u16()?;
-            let bits = r.read_u8()?;
-            if bits == 0 || bits > 12 {
-                return Err(SaveError::BadData("битовая ширина высот"));
+            let mut tiles = Box::new([0_u8; CHUNK_TILES]);
+            for slot in tiles.iter_mut() {
+                *slot = r.read_u8()?;
             }
-            if min > HEIGHT_MAX {
-                return Err(SaveError::BadData("минимум высот"));
-            }
-            let words_len = (CHUNK_TILES * bits as usize).div_ceil(64);
-            let mut words = Vec::with_capacity(words_len);
-            for _ in 0..words_len {
-                words.push(r.read_u64()?);
-            }
-            let packed = PackedHeights {
-                min,
-                bits,
-                words: words.into_boxed_slice(),
-            };
-            for idx in 0..CHUNK_TILES {
-                if packed.get(idx) > HEIGHT_MAX {
-                    return Err(SaveError::BadData("высота вне диапазона"));
-                }
-            }
-            Ok(Heightmap::Packed(packed))
+            Ok(Heightmap::Full(tiles))
         }
         _ => Err(SaveError::BadData("тег высот")),
     }

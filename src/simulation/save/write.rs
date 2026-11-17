@@ -355,21 +355,16 @@ fn write_task_kind(w: &mut Vec<u8>, kind: &TaskKind) {
         }
     }
 }
-/// Записывает слой высот: тег Uniform/Packed, заголовок и упакованные
-/// дельты. Порядок байт слов — little-endian, как у всего формата.
+/// Записывает слой высот: тег Uniform/Full и значения.
 fn write_heightmap(w: &mut Vec<u8>, heights: &Heightmap) {
     match heights {
         Heightmap::Uniform(height) => {
             w.push(0);
-            write_u16(w, *height);
+            w.push(*height);
         }
-        Heightmap::Packed(packed) => {
+        Heightmap::Full(tiles) => {
             w.push(1);
-            write_u16(w, packed.min);
-            w.push(packed.bits);
-            for word in packed.words.iter() {
-                write_u64(w, *word);
-            }
+            w.extend_from_slice(tiles.as_slice());
         }
     }
 }

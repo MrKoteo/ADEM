@@ -1,7 +1,9 @@
 //! Тесты климата: температура как чистая функция календаря — сезонный
 //! ход, суточный ход и непрерывность.
 
-use crate::simulation::climate::ambient_temperature_c;
+use crate::simulation::climate::{
+    ambient_temperature_c, CLIMATE_CELL_TILES, ClimateMap, MoistureMap,
+};
 use crate::simulation::time::{TICKS_PER_DAY, TICKS_PER_MONTH, TICKS_PER_YEAR, start_tick};
 
 /// Сезонный ход: в разгар лета теплее, чем в разгар зимы; средние за месяц
@@ -59,4 +61,37 @@ fn temperature_is_continuous_and_sane() {
         assert!((-15.0..=35.0).contains(&temp), "температура вне климата: {temp}");
         t += TICKS_PER_DAY / 4;
     }
+}
+
+/// Температура и влажность — карты 2×2 с билинейной выборкой. Соседние
+/// тайлы отличаются плавно, в том числе на границе чанка (16 тайлов):
+/// привязки биомов к сетке чанков нет.
+#[test]
+fn climate_maps_are_smooth_across_chunk_borders() {
+    let climate = ClimateMap::new(256, 7);
+    let moisture = MoistureMap::new(256, 7);
+    assert_eq!(moisture.side(), 256 / CLIMATE_CELL_TILES as usize);
+
+    let mut max_moisture_step = 0.0_f32;
+    let mut max_temperature_step = 0.0_f32;
+    for y in 0..256 {
+        for x in 0..255 {
+            let m0 = moisture.moisture_at(x, y);
+            let m1 = moisture.moisture_at(x + 1, y);
+            max_moisture_step = max_moisture_step.max((m1 - m0).abs());
+            let t0 = climate.offset_at(x, y);
+            let t1 = climate.offset_at(x + 1, y);
+            max_temperature_step = max_temperature_step.max((t1 - t0).abs());
+        }
+    }
+    // Карты 2×2 и шум крупнее тайла: шаг между соседями мал даже на
+    // границе чанка.
+    assert!(
+        max_moisture_step < 0.08,
+        "скачок влажности между соседними тайлами: {max_moisture_step}"
+    );
+    assert!(
+        max_temperature_step < 3.0,
+        "скачок температуры между соседними тайлами: {max_temperature_step}"
+    );
 }

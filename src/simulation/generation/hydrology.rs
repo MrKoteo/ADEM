@@ -1,14 +1,22 @@
 //! Гидрология: море, озёра и реки на основе поля высот.
 //!
 //! Гибридная схема: на грубой сетке (шаг 4–8 тайлов) считается бессточное
-//! заполнение депрессий, дерево стока и накопление водосбора. Затем реки и
-//! озёра доводятся на полной сетке. Это даёт реалистичные водосборы без
-//! полноразмерных `u32`-сеток на больших картах.
+//! заполнение депрессий, дерево стока и накопление водосбора. Затем реки,
+//! моря и озёра доводятся на полной сетке.
+//!
+//! Ключевые инварианты:
+//! - высота воды — это уровень **поверхности**, а не дна;
+//! - море всегда на `SEA_LEVEL = 0`; внутренние моря, соединённые с
+//!   краевым океаном, сливаются с ним (иначе на стыке остаётся ступенька);
+//! - поверхность реки берётся из depression-filled высоты `filled`: она
+//!   монотонно не растёт вниз по течению и не выше берегов — поэтому нет
+//!   ям, подъёмов вверх и «висящей» воды;
+//! - путь реки сглаживается (Chaikin), чтобы не было «гармошки» по сетке.
 
 use std::collections::VecDeque;
 
-use super::height::HeightField;
-use crate::simulation::heightmap::{HEIGHT_MAX, SEA_LEVEL};
+use super::height::{HeightField, HEIGHT_MAX_SUB, HEIGHT_SUB};
+use crate::simulation::heightmap::SEA_LEVEL;
 
 /// Вид воды на тайле. `None` — суша.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -27,22 +35,32 @@ impl WaterKind {
     pub(crate) fn is_water(self) -> bool {
         self != Self::None
     }
+
+    #[inline]
+    pub(crate) fn is_sea(self) -> bool {
+        matches!(self, Self::SeaShallow | Self::SeaDeep | Self::SeaOcean)
+    }
+
+    #[inline]
+    pub(crate) fn is_lake(self) -> bool {
+        matches!(self, Self::Lake | Self::LakeDeep)
+    }
 }
 
-/// Минимальное накопление водосбора для реки, в грубых клетках.
-const RIVER_MIN_ACCUM: u32 = 32;
-/// Минимальная глубина депрессии, чтобы считать её озером, уровней.
-const LAKE_MIN_DEPTH: u16 = 4;
+/// Минимальное накопление водосбора для истока реки, в грубых клетках.
+const RIVER_MIN_ACCUM: u32 = 64;
+/// Минимальная глубина депрессии, чтобы считать её озером, подуровней.
+const LAKE_MIN_DEPTH: u16 = HEIGHT_SUB * 2;
 /// Минимальная площадь озера в грубых клетках.
 const LAKE_MIN_COARSE: usize = 4;
-/// Глубина русла: от 8 до 32 уровней (4–16 юнитов, 0.25–1 тайл).
-const RIVER_DEPTH_MIN: u16 = 8;
-const RIVER_DEPTH_STEP: u16 = 8;
+/// Минимальный водоём внутри суши: более мелкие «лужи» на нулевой высоте
+/// поднимаются до суши, чтобы не оставлять однотайловые дыры.
+const MIN_INLAND_WATER_TILES: usize = 12;
 
 const NEIGHBORS_4: [(i32, i32); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
 
 /// Связность водоёмов — восьмисоседняя: диагональный контакт воды визуально
-/// читается как один водоём, а не как «внутреннее море» выше океана.
+/// читается как один водоём.
 const NEIGHBORS_8: [(i32, i32); 8] = [
     (-1, -1),
     (0, -1),
@@ -82,7 +100,7 @@ impl BitGrid {
     }
 }
 
-/// Очередь по высоте 0..4095: priority-flood без `BinaryHeap`.
+/// Очередь по высоте 0..HEIGHT_MAX_SUB: priority-flood без `BinaryHeap`.
 struct HeightQueue {
     buckets: Vec<Vec<u32>>,
     level: usize,
@@ -91,14 +109,14 @@ struct HeightQueue {
 impl HeightQueue {
     fn new() -> Self {
         Self {
-            buckets: (0..=HEIGHT_MAX as usize).map(|_| Vec::new()).collect(),
+            buckets: (0..=HEIGHT_MAX_SUB as usize).map(|_| Vec::new()).collect(),
             level: 0,
         }
     }
 
     #[inline]
     fn push(&mut self, height: u16, index: u32) {
-        self.buckets[height.min(HEIGHT_MAX) as usize].push(index);
+        self.buckets[height.min(HEIGHT_MAX_SUB) as usize].push(index);
     }
 
     fn pop(&mut self) -> Option<u32> {
@@ -113,8 +131,10 @@ impl HeightQueue {
 }
 
 /// Строит воду на карте. Возвращает карту видов воды (1 Б/тайл).
+/// `sea_depth` — глубина ниже уровня моря по исходной высоте (0 — суша).
 pub(crate) fn build_hydrology(
     field: &mut HeightField,
+    sea_depth: &[u8],
     size: i32,
     cancelled: &dyn Fn() -> bool,
 ) -> Option<Vec<WaterKind>> {
@@ -138,7 +158,8 @@ pub(crate) fn build_hydrology(
         for x in 0..width {
             let cx = x / step as usize;
             let ci = cy * cw + cx;
-            sums[ci] += field.data()[row + x] as u32;
+            let value = field.data()[row + x];
+            sums[ci] += u32::from(value);
             counts[ci] += 1;
         }
     }
@@ -150,7 +171,8 @@ pub(crate) fn build_hydrology(
     drop(counts);
 
     // 2. Priority-flood на грубой сетке: заполняем депрессии и строим
-    // дерево стока. Родитель — клетка, из которой впервые пришли.
+    // дерево стока. `filled` — монотонная поверхность воды-заполнения,
+    // именно она используется как уровень рек.
     let mut filled = coarse.clone();
     let mut parent = vec![u32::MAX; cw * cw];
     let mut visited = BitGrid::new(cw);
@@ -214,18 +236,16 @@ pub(crate) fn build_hydrology(
         }
     }
 
-    // 4. Озёра: связные группы заполненных депрессий. Мелкие лужи не
-    // превращаем в воду — оставляем сухими.
+    // 4. Озёра: связные группы заполненных депрессий.
     let mut is_lake = vec![false; cw * cw];
     for index in 0..cw * cw {
-        // Бессточные впадины ниже уровня моря тоже вода: иначе внутри суши
-        // оставались бы «дыры» ниже моря с травой на дне. Море уже занято
-        // отдельным BFS и в озеро не попадёт.
         is_lake[index] = filled[index] > coarse[index].saturating_add(LAKE_MIN_DEPTH);
     }
     let mut lake_level = vec![0_u16; cw * cw];
+    let mut lake_region = vec![0_u32; cw * cw];
     let mut lake_seen = BitGrid::new(cw);
     let mut lake_seeds = Vec::new();
+    let mut next_region = 1_u32;
     for start in 0..cw * cw {
         if !is_lake[start] || lake_seen.get(start) {
             continue;
@@ -254,10 +274,17 @@ pub(crate) fn build_hydrology(
         if region.len() < LAKE_MIN_COARSE {
             continue;
         }
-        let level = region.iter().map(|&cell| filled[cell]).max().unwrap_or(SEA_LEVEL);
+        let level = region
+            .iter()
+            .map(|&cell| filled[cell])
+            .max()
+            .unwrap_or(SEA_LEVEL as u16);
         let mut lowest = region[0];
+        let region_id = next_region;
+        next_region += 1;
         for &cell in &region {
             lake_level[cell] = level;
+            lake_region[cell] = region_id;
             if coarse[cell] < coarse[lowest] {
                 lowest = cell;
             }
@@ -268,238 +295,67 @@ pub(crate) fn build_hydrology(
             cx * step + step / 2,
             cy * step + step / 2,
             level,
-            // Запас на уточнение границы на полной сетке; иначе BFS
-            // останавливается внутри чаши и оставляет «остров»/яму.
-            region.len() * step as usize * step as usize * 4,
+            region_id,
         ));
     }
 
-    // 5. Море: вода, достижимая от края и лежащая ниже уровня моря.
-    // Глубину определяем до выравнивания поверхности.
-    flood_sea(field, &mut water, size, cancelled)?;
+    // 5. Море: вода на уровне моря, достижимая от края. Высоты уже плоские
+    // (генератор), BFS только классифицирует.
+    flood_sea(sea_depth, &mut water, size, cancelled)?;
 
     // 6. Озёра на полной сетке: заливаем связные низины до уровня перелива.
-    for (sx, sy, level, cap) in lake_seeds {
-        if !flood_lake(field, &mut water, size, sx, sy, level, cap, cancelled) {
+    // Без произвольного `cap`: иначе край озера обрезается прямоугольником
+    // по сетке, и получаются «квадратные» водоёмы.
+    for (sx, sy, level, region_id) in lake_seeds {
+        if !flood_lake(
+            field,
+            &mut water,
+            size,
+            sx,
+            sy,
+            level,
+            region_id,
+            &lake_region,
+            cw,
+            step,
+            cancelled,
+        ) {
             return None;
         }
     }
 
-    // 7. Реки: русло углубляем относительно местного рельефа. Ширина и
-    // глубина растут с накоплением водосбора. Море и озёра не трогаем.
-    let mut river_depth = vec![0_u8; tiles];
-    for cy in 0..cw {
-        if cy % 64 == 0 && cancelled() {
-            return None;
-        }
-        for cx in 0..cw {
-            let index = cy * cw + cx;
-            if lake_level[index] > 0
-                || filled[index] <= SEA_LEVEL
-                || accumulation[index] < RIVER_MIN_ACCUM
-                || parent[index] == u32::MAX
-            {
-                continue;
-            }
-            let downstream = parent[index] as usize;
-            let width_cells =
-                1 + (accumulation[index] / RIVER_MIN_ACCUM).ilog2().min(2) as i32;
-            let depth = river_depth_for(accumulation[index]);
-            let x0 = cx as i32 * step + step / 2;
-            let y0 = cy as i32 * step + step / 2;
-            let x1 = (downstream % cw) as i32 * step + step / 2;
-            let y1 = (downstream / cw) as i32 * step + step / 2;
-            // Ширина русла: 3 или 5 тайлов. Радиус 0 оставлял короткие
-            // обрывки русел, не доходящие до водоёма; диск радиуса 3 — уже
-            // семь тайлов, это слишком широко для карты 256.
-            let radius = width_cells.clamp(1, 2);
-            paint_river_segment(&mut river_depth, size, x0, y0, x1, y1, radius, depth);
-        }
-    }
-    for y in 0..size {
-        if cancelled() {
-            return None;
-        }
-        let row = y as usize * width;
-        for x in 0..size {
-            let index = row + x as usize;
-            let depth = river_depth[index];
-            if depth == 0 || water[index].is_water() {
-                continue;
-            }
-            // Русло не должно уходить ниже моря: устье сливается с морем.
-            let carved = field.data()[index].saturating_sub(depth as u16).max(SEA_LEVEL);
-            field.set_index(index, carved);
-            water[index] = WaterKind::River;
-        }
-    }
-
-    if !flatten_water_bodies(field, &water, size, cancelled) {
+    // 7. Согласование стоячей воды: внутренние моря, соединённые с краевым
+    // океаном, сливаются с ним; мелкие лужи на нулевой высоте поднимаются
+    // до суши. Заодно поверхность каждого озера выравнивается и проверяется
+    // по берегам.
+    if !finalize_water_bodies(field, &mut water, size, cancelled) {
         return None;
     }
+
+    // 8. Реки: поверхность = `filled` (монотонно вниз по течению), путь
+    // сглаживается Chaikin. Русло не углубляем локально — иначе появляются
+    // ямы и подъёмы вверх по склону.
+    if !build_rivers(
+        field,
+        &mut water,
+        &filled,
+        &parent,
+        &accumulation,
+        &lake_level,
+        cw,
+        step,
+        size,
+        cancelled,
+    ) {
+        return None;
+    }
+
     Some(water)
 }
-
-/// Выравнивает поверхность каждого водоёма: море — `SEA_LEVEL`, озеро — его
-/// уровень перелива. Реки исключены: у них наклонная поверхность русла.
-/// Восьмисоседняя связность убирает «внутренние моря» выше океана, если
-/// водоём касается моря по диагонали.
-fn flatten_water_bodies(
-    field: &mut HeightField,
-    water: &[WaterKind],
-    size: i32,
-    cancelled: &dyn Fn() -> bool,
-) -> bool {
-    let width = size as usize;
-    let mut visited = BitGrid::new(width);
-    let mut queue: VecDeque<(i32, i32)> = VecDeque::new();
-    let mut component: Vec<u32> = Vec::new();
-    let mut steps = 0_u32;
-
-    for start_y in 0..size {
-        if start_y % 64 == 0 && cancelled() {
-            return false;
-        }
-        for start_x in 0..size {
-            let start = start_y as usize * width + start_x as usize;
-            if visited.get(start) {
-                continue;
-            }
-            let kind = water[start];
-            if !kind.is_water() || kind == WaterKind::River {
-                continue;
-            }
-            visited.set(start);
-            component.clear();
-            queue.clear();
-            queue.push_back((start_x, start_y));
-            let mut is_sea = false;
-            let mut level = 0_u16;
-            let mut boundary: Option<u16> = None;
-            while let Some((x, y)) = queue.pop_front() {
-                steps += 1;
-                if steps.is_multiple_of(65_536) && cancelled() {
-                    return false;
-                }
-                let index = y as usize * width + x as usize;
-                component.push(index as u32);
-                if matches!(
-                    water[index],
-                    WaterKind::SeaShallow | WaterKind::SeaDeep | WaterKind::SeaOcean
-                ) {
-                    is_sea = true;
-                }
-                level = level.max(field.data()[index]);
-                for (dx, dy) in NEIGHBORS_8 {
-                    let nx = x + dx;
-                    let ny = y + dy;
-                    if nx < 0 || ny < 0 || nx >= size || ny >= size {
-                        continue;
-                    }
-                    let ni = ny as usize * width + nx as usize;
-                    let nk = water[ni];
-                    if nk.is_water() && nk != WaterKind::River {
-                        if !visited.get(ni) {
-                            visited.set(ni);
-                            queue.push_back((nx, ny));
-                        }
-                    } else {
-                        // Берег или река: уровень озера не должен быть выше
-                        // самой низкой границы, иначе вода «висит» над сушей.
-                        let h = field.data()[ni];
-                        boundary = Some(boundary.map_or(h, |b| b.min(h)));
-                    }
-                }
-            }
-            let target = if is_sea {
-                SEA_LEVEL
-            } else {
-                level.min(boundary.unwrap_or(level))
-            };
-            for &index in &component {
-                field.set_index(index as usize, target);
-            }
-        }
-    }
-
-    // Устье реки должно совпадать с поверхностью водоёма, иначе на стыке
-    // реки и озера/моря остаётся ступенька.
-    for y in 0..size {
-        if y % 64 == 0 && cancelled() {
-            return false;
-        }
-        for x in 0..size {
-            let index = y as usize * width + x as usize;
-            if water[index] != WaterKind::River {
-                continue;
-            }
-            let mut mouth = None;
-            for (dx, dy) in NEIGHBORS_8 {
-                let nx = x + dx;
-                let ny = y + dy;
-                if nx < 0 || ny < 0 || nx >= size || ny >= size {
-                    continue;
-                }
-                let ni = ny as usize * width + nx as usize;
-                if water[ni].is_water() && water[ni] != WaterKind::River {
-                    let h = field.data()[ni];
-                    mouth = Some(mouth.map_or(h, |m: u16| m.min(h)));
-                }
-            }
-            if let Some(mouth) = mouth {
-                field.set_index(index, mouth);
-            }
-        }
-    }
-    true
-}
-
-/// Глубина русла по накоплению водосбора.
-fn river_depth_for(accumulation: u32) -> u8 {
-    let ratio = accumulation / RIVER_MIN_ACCUM;
-    let steps = ratio.ilog2().min(3) as u16;
-    (RIVER_DEPTH_MIN + steps * RIVER_DEPTH_STEP).min(32) as u8
-}
-
-/// Рисует отрезок русла на полной сетке с диском радиуса `radius`.
-fn paint_river_segment(
-    river_depth: &mut [u8],
-    size: i32,
-    x0: i32,
-    y0: i32,
-    x1: i32,
-    y1: i32,
-    radius: i32,
-    depth: u8,
-) {
-    let steps = ((x1 - x0).abs().max((y1 - y0).abs())).max(1);
-    for step in 0..=steps {
-        let t = step as f32 / steps as f32;
-        let x = (x0 as f32 + (x1 - x0) as f32 * t).round() as i32;
-        let y = (y0 as f32 + (y1 - y0) as f32 * t).round() as i32;
-        for dy in -radius..=radius {
-            for dx in -radius..=radius {
-                if dx * dx + dy * dy > radius * radius {
-                    continue;
-                }
-                let px = x + dx;
-                let py = y + dy;
-                if px < 0 || py < 0 || px >= size || py >= size {
-                    continue;
-                }
-                let index = py as usize * size as usize + px as usize;
-                if river_depth[index] < depth {
-                    river_depth[index] = depth;
-                }
-            }
-        }
-    }
-}
-
-/// Размечает море: вода, достижимая от края и лежащая ниже `SEA_LEVEL`.
-/// Поверхность моря плоская; глубина — по высоте дна до выравнивания.
+/// Размечает море: вода на уровне моря, достижимая от края. **Высоты не
+/// пишет** — генератор уже сделал море плоским.
 fn flood_sea(
-    field: &mut HeightField,
+    sea_depth: &[u8],
     water: &mut [WaterKind],
     size: i32,
     cancelled: &dyn Fn() -> bool,
@@ -510,15 +366,12 @@ fn flood_sea(
     for i in 0..size {
         for &(x, y) in &[(i, 0), (i, size - 1), (0, i), (size - 1, i)] {
             let index = y as usize * width + x as usize;
-            if seen.get(index) {
+            if seen.get(index) || sea_depth[index] == 0 {
                 continue;
             }
-            if field.data()[index] <= SEA_LEVEL {
-                seen.set(index);
-                let d = SEA_LEVEL - field.data()[index];
-                water[index] = sea_kind(d);
-                queue.push_back((x, y));
-            }
+            seen.set(index);
+            water[index] = WaterKind::SeaShallow;
+            queue.push_back((x, y));
         }
     }
     let mut steps = 0_u32;
@@ -534,42 +387,22 @@ fn flood_sea(
                 continue;
             }
             let index = ny as usize * width + nx as usize;
-            if seen.get(index) || field.data()[index] > SEA_LEVEL {
+            if seen.get(index) || sea_depth[index] == 0 {
                 continue;
             }
             seen.set(index);
-            let d = SEA_LEVEL - field.data()[index];
-            water[index] = sea_kind(d);
+            water[index] = WaterKind::SeaShallow;
             queue.push_back((nx, ny));
-        }
-    }
-    for y in 0..size {
-        if y % 64 == 0 && cancelled() {
-            return None;
-        }
-        for x in 0..size {
-            let index = y as usize * width + x as usize;
-            if water[index].is_water() {
-                field.set_index(index, SEA_LEVEL);
-            }
         }
     }
     Some(())
 }
 
-#[inline]
-fn sea_kind(depth: u16) -> WaterKind {
-    if depth >= 48 {
-        WaterKind::SeaOcean
-    } else if depth >= 24 {
-        WaterKind::SeaDeep
-    } else {
-        WaterKind::SeaShallow
-    }
-}
-
-/// Заливает озеро на полной сетке до уровня перелива. Ограничение `cap`
-/// защищает от «улёта» воды по случайному низкому проходу.
+/// Заливает озеро на полной сетке до уровня перелива. Без `cap`: вода
+/// останавливается только на уровне перелива, а не на границе произвольной
+/// площади. `level` — поверхность озера в подуровнях.
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn flood_lake(
     field: &mut HeightField,
     water: &mut [WaterKind],
@@ -577,7 +410,10 @@ fn flood_lake(
     sx: i32,
     sy: i32,
     level: u16,
-    cap: usize,
+    region_id: u32,
+    lake_region: &[u32],
+    cw: usize,
+    step: i32,
     cancelled: &dyn Fn() -> bool,
 ) -> bool {
     if sx < 0 || sy < 0 || sx >= size || sy >= size {
@@ -585,32 +421,46 @@ fn flood_lake(
     }
     let width = size as usize;
     let start = sy as usize * width + sx as usize;
-    if water[start].is_water() || field.data()[start] > level {
+    if water[start].is_water() || field.data()[start] >= level {
         return true;
     }
-    let max_area = cap.max(64).min(width * width);
+    // Маску грубой области расширяем на 1 клетку: берег рисуется по
+    // настоящему контуру высот, а не по границе 4×4-клеток, но вода всё
+    // равно не может уйти за пределы бассейна.
+    let in_region = |nx: i32, ny: i32| {
+        let cx = (nx / step) as i32;
+        let cy = (ny / step) as i32;
+        for dy in -1..=1 {
+            for dx in -1..=1 {
+                let mx = cx + dx;
+                let my = cy + dy;
+                if mx < 0 || my < 0 || mx >= cw as i32 || my >= cw as i32 {
+                    continue;
+                }
+                if lake_region[my as usize * cw + mx as usize] == region_id {
+                    return true;
+                }
+            }
+        }
+        false
+    };
     let mut queue = VecDeque::new();
     queue.push_back((sx, sy));
-    let deep = level.saturating_sub(field.data()[start]) >= 24;
-    water[start] = if deep { WaterKind::LakeDeep } else { WaterKind::Lake };
+    water[start] = WaterKind::Lake;
     field.set_index(start, level);
     let mut filled = 1_usize;
     while let Some((x, y)) = queue.pop_front() {
-        if filled >= max_area {
-            break;
-        }
         for (dx, dy) in NEIGHBORS_8 {
             let nx = x + dx;
             let ny = y + dy;
-            if nx < 0 || ny < 0 || nx >= size || ny >= size {
+            if nx < 0 || ny < 0 || nx >= size || ny >= size || !in_region(nx, ny) {
                 continue;
             }
             let index = ny as usize * width + nx as usize;
-            if water[index].is_water() || field.data()[index] > level {
+            if water[index].is_water() || field.data()[index] >= level {
                 continue;
             }
-            let deep = level.saturating_sub(field.data()[index]) >= 24;
-            water[index] = if deep { WaterKind::LakeDeep } else { WaterKind::Lake };
+            water[index] = WaterKind::Lake;
             field.set_index(index, level);
             queue.push_back((nx, ny));
             filled += 1;
@@ -622,42 +472,445 @@ fn flood_lake(
     true
 }
 
+/// Согласует стоячую воду после морей и озёр:
+/// - все `height == 0`, ещё не размеченные, считаются водой;
+/// - компонента, соединённая с морем или краем карты, становится морем на 0;
+/// - остальные — озёра, поверхность выравнивается по самому низкому берегу;
+/// - совсем маленькие лужи на нулевой высоте поднимаются до суши.
+fn finalize_water_bodies(
+    field: &mut HeightField,
+    water: &mut [WaterKind],
+    size: i32,
+    cancelled: &dyn Fn() -> bool,
+) -> bool {
+    let width = size as usize;
+    for y in 0..size {
+        if y % 64 == 0 && cancelled() {
+            return false;
+        }
+        for x in 0..size {
+            let index = y as usize * width + x as usize;
+            if field.data()[index] == SEA_LEVEL as u16 && !water[index].is_water() {
+                water[index] = WaterKind::Lake;
+            }
+        }
+    }
+
+    let mut visited = BitGrid::new(width);
+    let mut queue = VecDeque::new();
+    let mut component = Vec::new();
+    let mut steps = 0_u32;
+    for start_y in 0..size {
+        if start_y % 64 == 0 && cancelled() {
+            return false;
+        }
+        for start_x in 0..size {
+            let start = start_y as usize * width + start_x as usize;
+            if visited.get(start) || !water[start].is_water() || water[start] == WaterKind::River {
+                continue;
+            }
+            visited.set(start);
+            component.clear();
+            queue.clear();
+            queue.push_back((start_x, start_y));
+            let mut is_sea = false;
+            let mut touches_border = false;
+            let mut level = 0_u16;
+            let mut min_bank = u16::MAX;
+            while let Some((x, y)) = queue.pop_front() {
+                steps += 1;
+                if steps.is_multiple_of(65_536) && cancelled() {
+                    return false;
+                }
+                let index = y as usize * width + x as usize;
+                component.push(index as u32);
+                if water[index].is_sea() {
+                    is_sea = true;
+                }
+                if x == 0 || y == 0 || x + 1 == size || y + 1 == size {
+                    touches_border = true;
+                }
+                level = level.max(field.data()[index]);
+                for (dx, dy) in NEIGHBORS_8 {
+                    let nx = x + dx;
+                    let ny = y + dy;
+                    if nx < 0 || ny < 0 || nx >= size || ny >= size {
+                        continue;
+                    }
+                    let ni = ny as usize * width + nx as usize;
+                    let nk = water[ni];
+                    if nk.is_water() && nk != WaterKind::River {
+                        if !visited.get(ni) {
+                            visited.set(ni);
+                            queue.push_back((nx, ny));
+                        }
+                    } else if nk == WaterKind::River {
+                        // Река — граница, но не часть стоячего водоёма.
+                        min_bank = min_bank.min(field.data()[ni]);
+                    } else {
+                        min_bank = min_bank.min(field.data()[ni]);
+                    }
+                }
+            }
+
+            if is_sea || touches_border {
+                for &index in &component {
+                    let index = index as usize;
+                    field.set_index(index, SEA_LEVEL as u16);
+                    water[index] = WaterKind::SeaShallow;
+                }
+            } else if level == SEA_LEVEL as u16 && component.len() < MIN_INLAND_WATER_TILES {
+                for &index in &component {
+                    let index = index as usize;
+                    field.set_index(index, HEIGHT_SUB);
+                    water[index] = WaterKind::None;
+                }
+            } else {
+                let target = level
+                    .min(if min_bank == u16::MAX { level } else { min_bank })
+                    .max(SEA_LEVEL as u16);
+                for &index in &component {
+                    let index = index as usize;
+                    field.set_index(index, target);
+                    water[index] = WaterKind::Lake;
+                }
+            }
+        }
+    }
+    true
+}
+
+/// Точка сглаженной линии реки: координаты в тайлах, уровень поверхности
+/// и ширина русла.
+#[derive(Clone, Copy)]
+struct RiverPoint {
+    x: f32,
+    y: f32,
+    level: f32,
+    radius: f32,
+}
+
+/// Строит реки: источники по накоплению и реальному уклону, непрерывное
+/// продолжение вниз по дереву стока, сглаживание пути и запись поверхности.
+#[allow(clippy::too_many_arguments)]
+fn build_rivers(
+    field: &mut HeightField,
+    water: &mut [WaterKind],
+    filled: &[u16],
+    parent: &[u32],
+    accumulation: &[u32],
+    lake_level: &[u16],
+    cw: usize,
+    step: i32,
+    size: i32,
+    cancelled: &dyn Fn() -> bool,
+) -> bool {
+    let tiles = (size as usize) * (size as usize);
+    // Источники: клетка с реальным уклоном и достаточным водосбором.
+    let mut is_river = vec![false; cw * cw];
+    for index in 0..cw * cw {
+        let downstream = parent[index];
+        if downstream == u32::MAX
+            || lake_level[index] > 0
+            || accumulation[index] < RIVER_MIN_ACCUM
+        {
+            continue;
+        }
+        if filled[index] > filled[downstream as usize] {
+            is_river[index] = true;
+        }
+    }
+    // Непрерывно продолжаем от истоков вниз по дереву.
+    // `discovery` не передан: идём по parent от каждой клетки вниз, пока
+    // не встретим уже помеченную реку. Детерминированный порядок.
+    for index in 0..cw * cw {
+        if !is_river[index] {
+            continue;
+        }
+        let mut cell = index;
+        while parent[cell] != u32::MAX {
+            let downstream = parent[cell] as usize;
+            // Вода (море/озеро) — устье, а не продолжение русла.
+            if water[downstream].is_water() || is_river[downstream] {
+                break;
+            }
+            is_river[downstream] = true;
+            cell = downstream;
+        }
+    }
+
+    // Число входящих речных детей: старт цепочки — клетка без них.
+    let mut upstream_count = vec![0_u16; cw * cw];
+    for index in 0..cw * cw {
+        if is_river[index] {
+            let downstream = parent[index];
+            if downstream != u32::MAX {
+                upstream_count[downstream as usize] =
+                    upstream_count[downstream as usize].saturating_add(1);
+            }
+        }
+    }
+
+    let mut surface = vec![u16::MAX; tiles];
+    for start in 0..cw * cw {
+        if !is_river[start] || upstream_count[start] != 0 {
+            continue;
+        }
+        let mut points = Vec::new();
+        let mut cell = start;
+        let mut guard = 0_usize;
+        loop {
+            guard += 1;
+            if guard > cw * cw {
+                break;
+            }
+            let cx = (cell % cw) as i32;
+            let cy = (cell / cw) as i32;
+            let radius = 1.0 + (accumulation[cell] / RIVER_MIN_ACCUM).ilog2().min(2) as f32;
+            points.push(RiverPoint {
+                x: (cx * step + step / 2) as f32,
+                y: (cy * step + step / 2) as f32,
+                level: filled[cell] as f32,
+                radius: radius.clamp(1.0, 2.0),
+            });
+            let downstream = parent[cell];
+            if downstream == u32::MAX {
+                break;
+            }
+            let next = downstream as usize;
+            if water[next].is_water() || !is_river[next] {
+                // Устье: последний речной тайл подгонится к воде отдельным
+                // проходом ниже. Точку воды в линию не добавляем, иначе
+                // интерполяция к уровню моря рисует «пику» через сушу.
+                break;
+            }
+            cell = next;
+        }
+        // Сглаживаем путь до Chaikin: убирает «гармошку» из шагов по сетке.
+        smooth_path(&mut points, 2);
+        // Монотонность: каждый речной участок не выше следующего вниз по
+        // течению.
+        for i in (0..points.len().saturating_sub(1)).rev() {
+            points[i].level = points[i].level.min(points[i + 1].level);
+        }
+        if points.len() >= 2 {
+            let smooth = chaikin(&points, 2);
+            rasterize_river(&mut surface, &smooth, size);
+        }
+        if start % 256 == 0 && cancelled() {
+            return false;
+        }
+    }
+
+    for index in 0..tiles {
+        if surface[index] == u16::MAX || water[index].is_water() {
+            continue;
+        }
+        let level = surface[index].max(SEA_LEVEL as u16);
+        field.set_index(index, level);
+        water[index] = WaterKind::River;
+    }
+    // Устья: река, касающаяся моря/озера, должна стоять ровно на его
+    // уровне, иначе на стыке остаётся ступенька.
+    for y in 0..size {
+        if y % 64 == 0 && cancelled() {
+            return false;
+        }
+        for x in 0..size {
+            let index = y as usize * size as usize + x as usize;
+            if water[index] != WaterKind::River {
+                continue;
+            }
+            let mut mouth = None;
+            for (dx, dy) in NEIGHBORS_8 {
+                let nx = x + dx;
+                let ny = y + dy;
+                if nx < 0 || ny < 0 || nx >= size || ny >= size {
+                    continue;
+                }
+                let ni = ny as usize * size as usize + nx as usize;
+                if water[ni].is_water() && water[ni] != WaterKind::River {
+                    mouth = Some(mouth.map_or(field.data()[ni], |m: u16| m.min(field.data()[ni])));
+                }
+            }
+            if let Some(level) = mouth {
+                field.set_index(index, level);
+            }
+        }
+    }
+    // Ямы: речной тайл ниже всех соседей — артефакт грубой сетки. Поднимаем
+    // до самого низкого соседа; несколько проходов, пока есть изменения.
+    for _ in 0..4 {
+        let mut changed = false;
+        for y in 0..size {
+            for x in 0..size {
+                let index = y as usize * size as usize + x as usize;
+                if water[index] != WaterKind::River {
+                    continue;
+                }
+                let mut lowest = u16::MAX;
+                for (dx, dy) in NEIGHBORS_8 {
+                    let nx = x + dx;
+                    let ny = y + dy;
+                    if nx < 0 || ny < 0 || nx >= size || ny >= size {
+                        continue;
+                    }
+                    let ni = ny as usize * size as usize + nx as usize;
+                    lowest = lowest.min(field.data()[ni]);
+                }
+                if lowest != u16::MAX && field.data()[index] < lowest {
+                    field.set_index(index, lowest);
+                    changed = true;
+                }
+            }
+        }
+        if !changed || cancelled() {
+            break;
+        }
+    }
+    true
+}
+
+/// Сглаживание полилинии 1-2-1 (концы не двигаются). Убирает мелкую
+/// «гармошку» до угловой срезки Чайкина.
+fn smooth_path(points: &mut [RiverPoint], passes: u32) {
+    if points.len() < 3 {
+        return;
+    }
+    let mut tmp = points.to_vec();
+    for _ in 0..passes {
+        for i in 1..points.len() - 1 {
+            let p0 = points[i - 1];
+            let p1 = points[i];
+            let p2 = points[i + 1];
+            tmp[i] = RiverPoint {
+                x: (p0.x + 2.0 * p1.x + p2.x) * 0.25,
+                y: (p0.y + 2.0 * p1.y + p2.y) * 0.25,
+                level: (p0.level + 2.0 * p1.level + p2.level) * 0.25,
+                radius: (p0.radius + 2.0 * p1.radius + p2.radius) * 0.25,
+            };
+        }
+        points.copy_from_slice(&tmp);
+    }
+}
+
+/// Угловая срезка Чайкина: сглаживает полилинию, не сдвигая концы.
+fn chaikin(points: &[RiverPoint], iterations: u32) -> Vec<RiverPoint> {
+    if points.len() < 2 {
+        return points.to_vec();
+    }
+    let mut current = points.to_vec();
+    for _ in 0..iterations {
+        let mut next = Vec::with_capacity(current.len() * 2);
+        next.push(current[0]);
+        for pair in current.windows(2) {
+            let p0 = pair[0];
+            let p1 = pair[1];
+            next.push(lerp_point(p0, p1, 0.25));
+            next.push(lerp_point(p0, p1, 0.75));
+        }
+        next.push(*current.last().expect("non-empty"));
+        current = next;
+    }
+    current
+}
+
+#[inline]
+fn lerp_point(a: RiverPoint, b: RiverPoint, t: f32) -> RiverPoint {
+    RiverPoint {
+        x: a.x + (b.x - a.x) * t,
+        y: a.y + (b.y - a.y) * t,
+        level: a.level + (b.level - a.level) * t,
+        radius: a.radius + (b.radius - a.radius) * t,
+    }
+}
+
+/// Рисует сглаженную линию реки дисками; поверхность — минимум из
+/// перекрывающихся участков (ниже по течению вода не должна «висеть»).
+fn rasterize_river(surface: &mut [u16], points: &[RiverPoint], size: i32) {
+    for pair in points.windows(2) {
+        let a = pair[0];
+        let b = pair[1];
+        let steps = ((b.x - a.x).abs().max((b.y - a.y).abs()).ceil() as i32).max(1);
+        for step in 0..=steps {
+            let t = step as f32 / steps as f32;
+            let p = lerp_point(a, b, t);
+            paint_disc(
+                surface,
+                size,
+                p.x.round() as i32,
+                p.y.round() as i32,
+                p.radius.round().clamp(1.0, 2.0) as i32,
+                p.level.round().clamp(0.0, HEIGHT_MAX_SUB as f32) as u16,
+            );
+        }
+    }
+}
+
+fn paint_disc(surface: &mut [u16], size: i32, x: i32, y: i32, radius: i32, level: u16) {
+    for dy in -radius..=radius {
+        for dx in -radius..=radius {
+            if dx * dx + dy * dy > radius * radius {
+                continue;
+            }
+            let px = x + dx;
+            let py = y + dy;
+            if px < 0 || py < 0 || px >= size || py >= size {
+                continue;
+            }
+            let index = py as usize * size as usize + px as usize;
+            if level < surface[index] {
+                surface[index] = level;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn field_with<F: FnMut(i32, i32) -> u16>(side: i32, mut height: F) -> HeightField {
+    fn field_with<F: FnMut(i32, i32) -> u16>(side: i32, mut height: F) -> (HeightField, Vec<u8>) {
         let mut field = HeightField::new(side as usize);
+        let mut sea_depth = vec![0_u8; (side * side) as usize];
         for y in 0..side {
             for x in 0..side {
-                field.set_index(y as usize * side as usize + x as usize, height(x, y));
+                let index = y as usize * side as usize + x as usize;
+                let h = height(x, y);
+                field.set_index(index, h);
+                if h == SEA_LEVEL as u16 {
+                    sea_depth[index] = 1;
+                }
             }
         }
-        field
+        (field, sea_depth)
     }
 
     #[test]
     fn lake_is_flat_at_spill_level() {
-        // Чаша: дно 900, борта 2000. Вода должна встать на уровень перелива,
-        // а не на дно, и быть плоской.
+        // Чаша: дно 20 уровней, борта 200 уровней.
         let side = 64;
-        let mut field = field_with(side, |x, y| {
+        let (mut field, sea_depth) = field_with(side, |x, y| {
             let dx = (x - 32).abs();
             let dy = (y - 32).abs();
-            if dx < 12 && dy < 12 { 900 } else { 2000 }
+            if dx < 12 && dy < 12 {
+                20 * HEIGHT_SUB
+            } else {
+                200 * HEIGHT_SUB
+            }
         });
-        let water = build_hydrology(&mut field, side, &|| false).expect("hydrology");
+        let water = build_hydrology(&mut field, &sea_depth, side, &|| false).expect("hydrology");
         let lake_count = water
             .iter()
-            .filter(|w| matches!(w, WaterKind::Lake | WaterKind::LakeDeep))
+            .filter(|w| w.is_lake())
             .count();
         assert!(lake_count > 0, "озеро не сформировалось");
         let level = field.get(32, 32);
-        assert!(level > 900, "уровень озера должен быть выше дна");
+        assert!(level > 20 * HEIGHT_SUB, "уровень озера должен быть выше дна");
         for y in 0..side {
             for x in 0..side {
                 let index = y as usize * side as usize + x as usize;
-                if matches!(water[index], WaterKind::Lake | WaterKind::LakeDeep) {
+                if water[index].is_lake() {
                     assert_eq!(field.get(x, y), level, "озеро должно быть плоским");
                 }
             }
@@ -665,13 +918,13 @@ mod tests {
     }
 
     #[test]
-    fn river_surface_is_below_its_banks() {
-        // Наклонная плоскость: сток идёт к нижнему краю, накопление
-        // превращается в реки. Русло должно быть ниже соседней суши.
+    fn river_surface_is_monotonic_and_below_banks() {
+        // Наклонная плоскость с ложбиной по центру.
         let side = 256;
-        let mut field = field_with(side, |_x, y| (3000 - y * 8).max(200) as u16);
-        let original = field.data().to_vec();
-        let water = build_hydrology(&mut field, side, &|| false).expect("hydrology");
+        let (mut field, sea_depth) = field_with(side, |x, y| {
+            ((200 - y / 2 - (x - 128).abs() / 2).max(2) as u16) * HEIGHT_SUB
+        });
+        let water = build_hydrology(&mut field, &sea_depth, side, &|| false).expect("hydrology");
         let mut river_tiles = 0;
         for y in 0..side {
             for x in 0..side {
@@ -680,34 +933,24 @@ mod tests {
                     continue;
                 }
                 river_tiles += 1;
-                // У самого устья берег может быть только ниже по течению —
-                // проверяем внутренние участки русла.
                 if x < 8 || y < 8 || x + 8 >= side || y + 8 >= side {
                     continue;
                 }
-                assert!(
-                    field.get(x, y) < original[index],
-                    "русло не углублено в ({x}, {y})"
-                );
-                let mut bank = false;
-                let mut land_neighbors = 0;
-                for (dx, dy) in NEIGHBORS_4 {
+                // Вода не выше ни одного соседнего берега (8-соседняя проверка).
+                for (dx, dy) in NEIGHBORS_8 {
                     let nx = x + dx;
                     let ny = y + dy;
+                    if nx < 0 || ny < 0 || nx >= side || ny >= side {
+                        continue;
+                    }
                     let ni = ny as usize * side as usize + nx as usize;
                     if !water[ni].is_water() {
-                        land_neighbors += 1;
-                        if field.get(nx, ny) > field.get(x, y) {
-                            bank = true;
-                        }
+                        assert!(
+                            field.data()[index] <= field.data()[ni],
+                            "река висит над берегом в ({x}, {y})"
+                        );
                     }
                 }
-                // Внутри широкой реки соседей-суши может не быть — это не
-                // ошибка, берег проверяем только на кромке русла.
-                if land_neighbors == 0 {
-                    continue;
-                }
-                assert!(bank, "у реки нет берега выше воды в ({x}, {y})");
             }
         }
         assert!(river_tiles > 0, "реки не сформировались");

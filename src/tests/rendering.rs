@@ -141,17 +141,17 @@ fn terrain_elevation_comes_from_the_height_layer() {
     let mut world = World::new(WorldSize::new(256), 1);
     let tile = TilePos { x: 2, y: 3 };
     world.set_terrain(tile, TileType::Mountain);
-    world.set_height(tile, 2000);
+    world.set_height(tile, 200);
     let position = world_position(&world, bevy::math::Vec2::new(2.5, 3.5));
 
     assert_eq!(position.x, 2.5 * WORLD_TILE_SIZE);
     assert_eq!(position.y, 3.5 * WORLD_TILE_SIZE);
-    assert_eq!(position.z, height_to_world(2000));
+    assert_eq!(position.z, height_to_world(200));
 
     // Тип тайла больше не влияет на высоту: меняем тип, высота остаётся.
     world.set_terrain(tile, TileType::Grass);
     let position = world_position(&world, bevy::math::Vec2::new(2.5, 3.5));
-    assert_eq!(position.z, height_to_world(2000));
+    assert_eq!(position.z, height_to_world(200));
 }
 
 #[test]
@@ -162,7 +162,7 @@ fn elevated_tile_mesh_has_top_and_camera_facing_sides() {
     let tile = TilePos { x: 0, y: 0 };
     world.set_terrain(tile, TileType::Mountain);
     // Высота — отдельный слой; без неё тайл плоский и стенок не даёт.
-    world.set_height(tile, 2000);
+    world.set_height(tile, 200);
     let mesh = build_block_mesh(&world, BlockPos { x: 0, y: 0 }, 0, &tile_uv_table())
         .expect("mountain tile");
 
@@ -180,7 +180,7 @@ fn terrain_mesh_has_wall_gradient_uv() {
 
     let mut world = World::new(WorldSize::new(256), 1);
     world.set_terrain(TilePos { x: 0, y: 0 }, TileType::Mountain);
-    world.set_height(TilePos { x: 0, y: 0 }, 2000);
+    world.set_height(TilePos { x: 0, y: 0 }, 200);
     let mesh = build_block_mesh(&world, BlockPos { x: 0, y: 0 }, 0, &tile_uv_table())
         .expect("mountain tile");
     let uv_b = match mesh.attribute(Mesh::ATTRIBUTE_UV_1) {
@@ -210,8 +210,8 @@ fn adjacent_equal_height_tiles_do_not_create_internal_walls() {
     world.set_terrain(TilePos { x: 63, y: 0 }, TileType::Mountain);
     world.set_terrain(TilePos { x: 64, y: 0 }, TileType::Mountain);
     // Одинаковая высота на границе блоков: внутренней стенки быть не должно.
-    world.set_height(TilePos { x: 63, y: 0 }, 2000);
-    world.set_height(TilePos { x: 64, y: 0 }, 2000);
+    world.set_height(TilePos { x: 63, y: 0 }, 200);
+    world.set_height(TilePos { x: 64, y: 0 }, 200);
 
     let left = build_block_mesh(&world, BlockPos { x: 3, y: 0 }, 0, &tile_uv_table())
         .expect("left mountain");
