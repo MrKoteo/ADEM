@@ -103,7 +103,7 @@ pub fn terrain_at(world: &World, pos: WorldPos) -> Option<TileType> {
 fn passable(world: &World, pos: WorldPos, on_deep_water: bool) -> bool {
     !matches!(
         terrain_at(world, pos),
-        Some(TileType::DeepWater | TileType::Ocean) if !on_deep_water
+        Some(TileType::DeepWater | TileType::Ocean | TileType::Ice) if !on_deep_water
     )
 }
 
@@ -162,7 +162,7 @@ pub fn step_direction(world: &mut World, actor: u64, dir: (f32, f32)) {
     let max = world.size.tiles() as f32;
     let on_deep = matches!(
         terrain_at(world, pos),
-        Some(TileType::DeepWater | TileType::Ocean)
+        Some(TileType::DeepWater | TileType::Ocean | TileType::Ice)
     );
     let speed = movement::effective_walk_speed(base_speed, terrain_at(world, pos));
     let dx = dir.0 / len * speed;
@@ -204,7 +204,13 @@ pub fn step_direction(world: &mut World, actor: u64, dir: (f32, f32)) {
 pub fn tick_hunger(world: &mut World, actor: u64, moving: bool) -> bool {
     let swimming = matches!(
         pos_of(world, actor).and_then(|pos| terrain_at(world, pos)),
-        Some(TileType::Water | TileType::DeepWater | TileType::Ocean)
+        Some(
+            TileType::Water
+                | TileType::DeepWater
+                | TileType::Ocean
+                | TileType::Ice
+                | TileType::River,
+        )
     );
     let activity = if swimming {
         Activity::Swimming
@@ -716,7 +722,13 @@ pub fn throw_items(world: &mut World, from: WorldPos, stack: ItemStack, target: 
 pub fn terrain_is_water(world: &World, pos: WorldPos) -> bool {
     matches!(
         terrain_at(world, pos),
-        Some(TileType::Water | TileType::DeepWater | TileType::Ocean)
+        Some(
+            TileType::Water
+                | TileType::DeepWater
+                | TileType::Ocean
+                | TileType::Ice
+                | TileType::River,
+        )
     )
 }
 

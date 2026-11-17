@@ -183,6 +183,7 @@ pub fn load_game(bytes: &[u8]) -> Result<SavedGame, SaveError> {
             chunks,
             entities,
             ambient_temperature_c: ambient,
+            climate: crate::simulation::climate::ClimateMap::new(size.tiles(), seed),
             projectiles,
             stuck_spears,
             next_projectile_id,

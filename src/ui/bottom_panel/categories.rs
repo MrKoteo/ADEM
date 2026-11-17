@@ -12,7 +12,7 @@ use crate::ui::icons::UiIcons;
 use super::{ButtonContent, PanelAction, PanelItem, PanelMenu};
 
 /// Размещаемые тайлы в порядке кнопок (Empty не ставится).
-const PLACEABLE_TILES: [TileType; 14] = [
+const PLACEABLE_TILES: [TileType; 17] = [
     TileType::Water,
     TileType::DeepWater,
     TileType::Ocean,
@@ -27,6 +27,9 @@ const PLACEABLE_TILES: [TileType; 14] = [
     TileType::Moss,
     TileType::Mud,
     TileType::Podzol,
+    TileType::Gravel,
+    TileType::Ice,
+    TileType::River,
 ];
 
 /// Кнопки инструментов категории, по порядку в сетке. Постройки —
@@ -88,6 +91,9 @@ pub(crate) fn tile_name(kind: TileType) -> &'static str {
         TileType::Moss => "Мох",
         TileType::Mud => "Грязь",
         TileType::Podzol => "Подзол",
+        TileType::Gravel => "Гравий",
+        TileType::Ice => "Лёд",
+        TileType::River => "Река",
     }
 }
 

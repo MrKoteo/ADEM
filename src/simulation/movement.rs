@@ -23,7 +23,7 @@ pub const MUD_SLOWDOWN: f32 = 2.0;
 /// `None` (позиция вне мира) замедления не даёт.
 pub fn terrain_speed_multiplier(terrain: Option<TileType>) -> f32 {
     match terrain {
-        Some(TileType::Water) => 1.0 / WADE_SLOWDOWN,
+        Some(TileType::Water | TileType::River) => 1.0 / WADE_SLOWDOWN,
         Some(TileType::Mountain) => 1.0 / MOUNTAIN_SLOWDOWN,
         Some(TileType::Mud) => 1.0 / MUD_SLOWDOWN,
         _ => 1.0,

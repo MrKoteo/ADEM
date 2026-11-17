@@ -618,11 +618,13 @@ pub(crate) fn build_texture_atlases(
 
     // 5. Строим отображения «вид → текстура». Индексы в атласе стабильны:
     // они выдаются в порядке добавления и не меняются при росте.
+    // UV на каждый вид тайла (а не на уникальную ячейку атласа): разные
+    // виды могут делить одну текстуру (река → мелководье), и индекс
+    // `discriminant - 1` должен всегда попадать в свой элемент.
     let tile_uv = tiles
-        .atlas
-        .rects
+        .indices
         .iter()
-        .map(|rect| uv_from_rect(*rect, tiles.atlas.size))
+        .map(|&index| uv_from_rect(tiles.atlas.rects[index as usize], tiles.atlas.size))
         .collect();
     let item = std::array::from_fn(|index| items.indices[sources.item_positions[index]]);
     let crop = std::array::from_fn(|index| items.indices[sources.crop_positions[index]]);
@@ -959,6 +961,10 @@ fn texture_path(key: TextureKey) -> String {
             TileType::Moss => "textures/tiles/moss.png",
             TileType::Mud => "textures/tiles/mud.png",
             TileType::Podzol => "textures/tiles/podzol.png",
+            TileType::Gravel => "textures/tiles/gravel.png",
+            TileType::Ice => "textures/tiles/ice.png",
+            // Река использует ту же текстуру, что мелководье.
+            TileType::River => "textures/tiles/water.png",
         },
         TextureKey::Object(kind) => match kind {
             ObjectKind::Tree => "textures/objects/tree.png",

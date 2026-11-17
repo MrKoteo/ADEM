@@ -9,11 +9,12 @@ use crate::rendering::{
 /// PNG, но обязаны передать корректную раскладку. Сетка 4×4, ячейка 36 px.
 fn tile_uv_table() -> Vec<[f32; 4]> {
     const CELL: u32 = 36;
-    const SIZE: f32 = 4.0 * CELL as f32;
+    const COLS: u32 = 5;
+    const SIZE: f32 = COLS as f32 * CELL as f32;
     (0..crate::simulation::tile::TileType::non_empty_count())
         .map(|index| {
-            let col = index as u32 % 4;
-            let row = index as u32 / 4;
+            let col = index as u32 % COLS;
+            let row = index as u32 / COLS;
             let x = col * CELL + 2;
             let y = row * CELL + 2;
             [
@@ -168,6 +169,37 @@ fn elevated_tile_mesh_has_top_and_camera_facing_sides() {
     // The fixed camera sees only the negative X and negative Y walls.
     assert_eq!(mesh.count_vertices(), 12);
     assert_eq!(mesh.indices().map(|indices| indices.len()), Some(18));
+}
+
+/// Стенки несут второй UV для контактной тени: низ 0, верх 1; верхние
+/// грани — 1 (тень выключена).
+#[test]
+fn terrain_mesh_has_wall_gradient_uv() {
+    use bevy::mesh::{Mesh, VertexAttributeValues};
+    use crate::simulation::{TilePos, World};
+
+    let mut world = World::new(WorldSize::new(256), 1);
+    world.set_terrain(TilePos { x: 0, y: 0 }, TileType::Mountain);
+    world.set_height(TilePos { x: 0, y: 0 }, 2000);
+    let mesh = build_block_mesh(&world, BlockPos { x: 0, y: 0 }, 0, &tile_uv_table())
+        .expect("mountain tile");
+    let uv_b = match mesh.attribute(Mesh::ATTRIBUTE_UV_1) {
+        Some(VertexAttributeValues::Float32x2(values)) => values,
+        _ => panic!("terrain mesh must have UV_1 for wall contact shadow"),
+    };
+    assert_eq!(uv_b.len(), mesh.count_vertices());
+    // Верхняя грань: 4 вершины с wall_t = 1.
+    for value in &uv_b[0..4] {
+        assert_eq!(*value, [0.0, 1.0]);
+    }
+    // Две стенки по 4 вершины: низ-низ-верх-верх.
+    for wall in 0..2 {
+        let base = 4 + wall * 4;
+        assert_eq!(uv_b[base], [0.0, 0.0]);
+        assert_eq!(uv_b[base + 1], [0.0, 0.0]);
+        assert_eq!(uv_b[base + 2], [0.0, 1.0]);
+        assert_eq!(uv_b[base + 3], [0.0, 1.0]);
+    }
 }
 
 #[test]

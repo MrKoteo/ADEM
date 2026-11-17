@@ -1405,7 +1405,7 @@ impl TerrainView<'_> {
     fn passable(&self, pos: WorldPos) -> bool {
         !matches!(
             self.terrain_at(pos),
-            Some(TileType::DeepWater | TileType::Ocean)
+            Some(TileType::DeepWater | TileType::Ocean | TileType::Ice)
         )
     }
 
@@ -1428,7 +1428,7 @@ impl TerrainView<'_> {
             };
             if matches!(
                 self.terrain_at(point),
-                Some(TileType::DeepWater | TileType::Ocean)
+                Some(TileType::DeepWater | TileType::Ocean | TileType::Ice)
             ) {
                 return false;
             }
@@ -1475,7 +1475,10 @@ impl TerrainView<'_> {
                 }
                 // Уходим от берега только по мелководью: глубина и океан
                 // для волка непроходимы, и путь через них не существует.
-                if !matches!(kind, TileType::DeepWater | TileType::Ocean) {
+                if !matches!(
+                    kind,
+                    TileType::DeepWater | TileType::Ocean | TileType::Ice
+                ) {
                     queue.push_back((nx, ny));
                 }
                 if visited.len() >= LAND_SEARCH_LIMIT {

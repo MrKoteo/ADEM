@@ -28,6 +28,12 @@ pub enum TileType {
     Mud,
     /// Подзол: задел под будущие биомы, пока не генерируется.
     Podzol,
+    /// Гравий: русла рек, высокие берега и осыпи.
+    Gravel,
+    /// Лёд: задел/ручная кисть; генерация его больше не ставит.
+    Ice,
+    /// Река: вода с наклонной поверхностью русла (в отличие от озёр/моря).
+    River,
 }
 
 impl TileType {
@@ -49,13 +55,23 @@ impl TileType {
             12 => Some(Self::Moss),
             13 => Some(Self::Mud),
             14 => Some(Self::Podzol),
+            15 => Some(Self::Gravel),
+            16 => Some(Self::Ice),
+            17 => Some(Self::River),
             _ => None,
         }
     }
 
-    /// Водный ли тайл: любая из трёх глубин воды непроходима с суши.
+    /// Водный ли тайл: любая вода (включая реки и лёд) непроходима с суши.
     pub fn is_water(self) -> bool {
-        matches!(self, TileType::Water | TileType::DeepWater | TileType::Ocean)
+        matches!(
+            self,
+            TileType::Water
+                | TileType::DeepWater
+                | TileType::Ocean
+                | TileType::Ice
+                | TileType::River
+        )
     }
 
     /// Число непустых видов тайлов (без `Empty`). Выводится из

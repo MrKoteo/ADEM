@@ -39,6 +39,449 @@ fn count_objects(world: &World) -> [u32; ObjectKind::ALL.len()] {
 // Генерация с одинаковым seed детерминирована по тайлам и объектам.
 //#[test]
 
+#[test]
+#[ignore]
+fn water_body_stats() {
+    for seed in [42_u64, 999, 7] {
+        let world = generate_world(WorldSize::new(256), seed);
+        let n = world.size.tiles() as i32;
+        let mut visited = vec![false; (n * n) as usize];
+        let mut queue = std::collections::VecDeque::new();
+        let mut bodies = Vec::new();
+        for y in 0..n {
+            for x in 0..n {
+                let index = (y * n + x) as usize;
+                if visited[index] {
+                    continue;
+                }
+                let kind = world.terrain_kind(TilePos { x, y });
+                if !kind.is_water() || kind == TileType::River {
+                    continue;
+                }
+                visited[index] = true;
+                queue.push_back((x, y));
+                let mut size = 0;
+                let mut min_h = u16::MAX;
+                let mut max_h = 0;
+                let mut edge = false;
+                let mut has_ocean = false;
+                while let Some((cx, cy)) = queue.pop_front() {
+                    size += 1;
+                    if cx == 0 || cy == 0 || cx + 1 == n || cy + 1 == n {
+                        edge = true;
+                    }
+                    let h = world.height(TilePos { x: cx, y: cy }).unwrap_or(0);
+                    min_h = min_h.min(h);
+                    max_h = max_h.max(h);
+                    if matches!(
+                        world.terrain_kind(TilePos { x: cx, y: cy }),
+                        TileType::Ocean | TileType::DeepWater
+                    ) {
+                        has_ocean = true;
+                    }
+                    for dy in -1..=1 {
+                        for dx in -1..=1 {
+                            if dx == 0 && dy == 0 {
+                                continue;
+                            }
+                            let nx = cx + dx;
+                            let ny = cy + dy;
+                            if nx < 0 || ny < 0 || nx >= n || ny >= n {
+                                continue;
+                            }
+                            let ni = (ny * n + nx) as usize;
+                            if visited[ni] {
+                                continue;
+                            }
+                            let nk = world.terrain_kind(TilePos { x: nx, y: ny });
+                            if nk.is_water() && nk != TileType::River {
+                                visited[ni] = true;
+                                queue.push_back((nx, ny));
+                            }
+                        }
+                    }
+                }
+                if size >= 50 {
+                    bodies.push((size, min_h, max_h, edge, has_ocean));
+                }
+            }
+        }
+        bodies.sort_by_key(|b| std::cmp::Reverse(b.0));
+        println!("seed {seed}: {} bodies", bodies.len());
+        for (size, min_h, max_h, edge, ocean) in bodies.iter().take(12) {
+            println!(
+                "  size={size} min={min_h} max={max_h} edge={edge} ocean={ocean}"
+            );
+        }
+    }
+}
+
+/// Ручная статистика состава карты для тюнинга биомов/гор/воды.
+/// Запуск: `cargo test generation_stats -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn generation_stats() {
+    for seed in [42_u64, 999, 7] {
+        let world = generate_world(WorldSize::new(256), seed);
+        let archetype = crate::simulation::generation::height::MapArchetype::for_seed(seed);
+        let n = world.size.tiles() as i32;
+        let mut counts = std::collections::BTreeMap::new();
+        let mut water = 0_u32;
+        let mut land = 0_u32;
+        let mut max_height = 0_u16;
+        for y in 0..n {
+            for x in 0..n {
+                let kind = world.terrain_kind(TilePos { x, y });
+                *counts.entry(format!("{kind:?}")).or_insert(0_u32) += 1;
+                if kind.is_water() {
+                    water += 1;
+                } else {
+                    land += 1;
+                }
+                max_height = max_height.max(world.height(TilePos { x, y }).unwrap_or(0));
+            }
+        }
+        println!(
+            "seed {seed} ({archetype:?}): water={water} land={land} max_height={max_height}"
+        );
+        for (kind, count) in counts {
+            println!("  {kind}: {count}");
+        }
+    }
+}
+
+/// Ручной замер генерации и памяти мира. Запуск:
+/// `cargo test generation_benchmark -- --ignored --nocapture`.
+/// Не входит в обычный прогон: на 4096² занимает секунды.
+#[test]
+#[ignore]
+fn generation_benchmark() {
+    for side in [256_u32, 1024, 2048, 4096] {
+        let start = std::time::Instant::now();
+        let world = generate_world(WorldSize::new(side), 12345);
+        println!(
+            "{side}x{side}: {:?}, world_mem={} bytes",
+            start.elapsed(),
+            world.memory_bytes()
+        );
+    }
+}
+
+/// Типы тайлов не противоречат итоговой высоте: трава не бывает выше
+/// камня, камень — выше гор, а пляжи стоят рядом с водой.
+#[test]
+fn terrain_types_respect_final_height_and_water() {
+    use crate::simulation::generation::height::{MOUNTAIN_HEIGHT, STONE_HEIGHT};
+
+    let world = generate_world(WorldSize::new(256), 42);
+    let n = world.size.tiles() as i32;
+    let mut sand = 0_u32;
+    let mut gravel = 0_u32;
+    for y in 0..n {
+        for x in 0..n {
+            let pos = TilePos { x, y };
+            let kind = world.terrain_kind(pos);
+            let height = world.height(pos).expect("тайл внутри мира");
+            match kind {
+                TileType::Grass
+                | TileType::ForestGrass
+                | TileType::Moss
+                | TileType::Dirt
+                | TileType::Clay => {
+                    assert!(
+                        height < STONE_HEIGHT,
+                        "трава/земля выше камня в ({x}, {y}): {height}"
+                    );
+                }
+                TileType::Stone => {
+                    assert!(height >= STONE_HEIGHT, "камень ниже порога: {height}")
+                }
+                TileType::Mountain => {
+                    assert!(height >= MOUNTAIN_HEIGHT, "гора ниже порога: {height}")
+                }
+                TileType::Sand => sand += 1,
+                TileType::Gravel => gravel += 1,
+                _ => {}
+            }
+            if matches!(kind, TileType::Sand | TileType::Gravel) {
+                // Пляж не дальше двух тайлов от воды/льда.
+                let mut near_water = false;
+                for dy in -2..=2 {
+                    for dx in -2..=2 {
+                        let nx = x + dx;
+                        let ny = y + dy;
+                        if nx < 0 || ny < 0 || nx >= n || ny >= n {
+                            continue;
+                        }
+                        if world.terrain_kind(TilePos { x: nx, y: ny }).is_water() {
+                            near_water = true;
+                        }
+                    }
+                }
+                assert!(near_water, "пляж без воды рядом в ({x}, {y})");
+            }
+        }
+    }
+    assert!(sand > 0, "нет песчаных пляжей");
+    assert!(gravel > 0, "нет гравийных берегов");
+}
+
+/// Климат больше не квантуется по чанкам: в одном чанке могут соседствовать
+/// трава и лесная трава (раньше весь чанк получал один биом).
+#[test]
+fn biomes_are_not_quantized_by_chunk() {
+    let world = generate_world(WorldSize::new(256), 999);
+    let mut mixed_chunks = 0;
+    for chunk in &world.chunks {
+        let mut grass = 0;
+        let mut forest = 0;
+        for idx in 0..crate::simulation::CHUNK_TILES {
+            match chunk.terrain.get(idx) {
+                TileType::Grass => grass += 1,
+                TileType::ForestGrass => forest += 1,
+                _ => {}
+            }
+        }
+        if grass > 0 && forest > 0 {
+            mixed_chunks += 1;
+        }
+    }
+    assert!(
+        mixed_chunks > 0,
+        "биомы всё ещё квантуются по чанкам: нет смешанных чанков"
+    );
+}
+
+/// Генерация больше не ставит лёд вместо воды.
+#[test]
+fn generation_does_not_place_ice() {
+    for seed in [42_u64, 999, 7] {
+        let world = generate_world(WorldSize::new(256), seed);
+        let n = world.size.tiles() as i32;
+        for y in 0..n {
+            for x in 0..n {
+                assert_ne!(
+                    world.terrain_kind(TilePos { x, y }),
+                    TileType::Ice,
+                    "seed {seed}: лёд в ({x}, {y})"
+                );
+            }
+        }
+    }
+}
+
+/// Вся вода, кроме рек, плоская в пределах водоёма: у каждого озера/моря
+/// своя высота поверхности, но внутри — ни ям, ни ступенек.
+#[test]
+fn water_bodies_are_flat_except_rivers() {
+    let world = generate_world(WorldSize::new(256), 999);
+    let n = world.size.tiles() as i32;
+    let mut visited = vec![false; (n * n) as usize];
+    let mut queue = std::collections::VecDeque::new();
+    let mut bodies = 0_u32;
+    for y in 0..n {
+        for x in 0..n {
+            let index = (y * n + x) as usize;
+            if visited[index] {
+                continue;
+            }
+            let kind = world.terrain_kind(TilePos { x, y });
+            if !kind.is_water() || kind == TileType::River {
+                continue;
+            }
+            bodies += 1;
+            visited[index] = true;
+            queue.push_back((x, y));
+            let mut level = None;
+            while let Some((cx, cy)) = queue.pop_front() {
+                let h = world.height(TilePos { x: cx, y: cy }).unwrap_or(0);
+                match level {
+                    None => level = Some(h),
+                    Some(expected) => assert_eq!(
+                        h, expected,
+                        "вода не плоская: {h} вместо {expected} в ({cx}, {cy})"
+                    ),
+                }
+                for dy in -1..=1 {
+                    for dx in -1..=1 {
+                        if dx == 0 && dy == 0 {
+                            continue;
+                        }
+                        let nx = cx + dx;
+                        let ny = cy + dy;
+                        if nx < 0 || ny < 0 || nx >= n || ny >= n {
+                            continue;
+                        }
+                        let ni = (ny * n + nx) as usize;
+                        if visited[ni] {
+                            continue;
+                        }
+                        let nk = world.terrain_kind(TilePos { x: nx, y: ny });
+                        if nk.is_water() && nk != TileType::River {
+                            visited[ni] = true;
+                            queue.push_back((nx, ny));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(bodies > 0, "на карте нет водоёмов");
+}
+
+/// Поверхность водоёма не выше соседней суши: вода не «висит» над берегом.
+#[test]
+fn water_surface_is_not_above_banks() {
+    let world = generate_world(WorldSize::new(256), 999);
+    let n = world.size.tiles() as i32;
+    for y in 0..n {
+        for x in 0..n {
+            let kind = world.terrain_kind(TilePos { x, y });
+            if !kind.is_water() || kind == TileType::River {
+                continue;
+            }
+            let water = world.height(TilePos { x, y }).unwrap_or(0);
+            for (dx, dy) in [(0, -1), (1, 0), (0, 1), (-1, 0)] {
+                let nx = x + dx;
+                let ny = y + dy;
+                if nx < 0 || ny < 0 || nx >= n || ny >= n {
+                    continue;
+                }
+                let nk = world.terrain_kind(TilePos { x: nx, y: ny });
+                if nk.is_water() {
+                    continue;
+                }
+                let bank = world.height(TilePos { x: nx, y: ny }).unwrap_or(0);
+                assert!(
+                    water <= bank,
+                    "вода выше берега в ({x}, {y}): {water} > {bank}"
+                );
+            }
+        }
+    }
+}
+
+/// Вода, связанная с краем карты, — море и всегда на уровне океана.
+#[test]
+fn edge_connected_water_is_at_sea_level() {
+    use crate::simulation::SEA_LEVEL;
+
+    let world = generate_world(WorldSize::new(256), 999);
+    let n = world.size.tiles() as i32;
+    let mut visited = vec![false; (n * n) as usize];
+    let mut queue = std::collections::VecDeque::new();
+    for i in 0..n {
+        for (x, y) in [(i, 0), (i, n - 1), (0, i), (n - 1, i)] {
+            let kind = world.terrain_kind(TilePos { x, y });
+            if !kind.is_water() || kind == TileType::River {
+                continue;
+            }
+            let index = (y * n + x) as usize;
+            if !visited[index] {
+                visited[index] = true;
+                queue.push_back((x, y));
+            }
+        }
+    }
+    while let Some((cx, cy)) = queue.pop_front() {
+        assert_eq!(
+            world.height(TilePos { x: cx, y: cy }),
+            Some(SEA_LEVEL),
+            "связанная с краем вода не на уровне океана в ({cx}, {cy})"
+        );
+        for dy in -1..=1 {
+            for dx in -1..=1 {
+                if dx == 0 && dy == 0 {
+                    continue;
+                }
+                let nx = cx + dx;
+                let ny = cy + dy;
+                if nx < 0 || ny < 0 || nx >= n || ny >= n {
+                    continue;
+                }
+                let ni = (ny * n + nx) as usize;
+                if visited[ni] {
+                    continue;
+                }
+                let kind = world.terrain_kind(TilePos { x: nx, y: ny });
+                if kind.is_water() && kind != TileType::River {
+                    visited[ni] = true;
+                    queue.push_back((nx, ny));
+                }
+            }
+        }
+    }
+}
+
+/// Реки — отдельный тип тайла, а не мелководье.
+#[test]
+fn generation_creates_river_tiles() {
+    let world = generate_world(WorldSize::new(256), 999);
+    let mut rivers = 0_u32;
+    for y in 0..world.size.tiles() as i32 {
+        for x in 0..world.size.tiles() as i32 {
+            if world.terrain_kind(TilePos { x, y }) == TileType::River {
+                rivers += 1;
+            }
+        }
+    }
+    assert!(rivers > 0, "реки не помечены TileType::River");
+    assert!(TileType::River.is_water());
+}
+
+/// Устье реки совпадает с уровнем водоёма: на стыке нет ступеньки.
+#[test]
+fn river_mouths_match_water_level() {
+    let world = generate_world(WorldSize::new(256), 999);
+    let n = world.size.tiles() as i32;
+    for y in 0..n {
+        for x in 0..n {
+            if world.terrain_kind(TilePos { x, y }) != TileType::River {
+                continue;
+            }
+            let mut mouth = None;
+            for dy in -1..=1 {
+                for dx in -1..=1 {
+                    if dx == 0 && dy == 0 {
+                        continue;
+                    }
+                    let nx = x + dx;
+                    let ny = y + dy;
+                    if nx < 0 || ny < 0 || nx >= n || ny >= n {
+                        continue;
+                    }
+                    let kind = world.terrain_kind(TilePos { x: nx, y: ny });
+                    if kind.is_water() && kind != TileType::River {
+                        let h = world.height(TilePos { x: nx, y: ny }).unwrap_or(0);
+                        mouth = Some(mouth.map_or(h, |m: u16| m.min(h)));
+                    }
+                }
+            }
+            if let Some(mouth) = mouth {
+                assert_eq!(
+                    world.height(TilePos { x, y }),
+                    Some(mouth),
+                    "ступенька в устье реки ({x}, {y})"
+                );
+            }
+        }
+    }
+}
+
+/// Температура локальная: высота снижает её, а карта не требует обновления.
+#[test]
+fn local_temperature_falls_with_height() {
+    let mut world = generate_world(WorldSize::new(256), 42);
+    let pos = TilePos { x: 128, y: 128 };
+    let low = world.local_temperature_c(pos);
+    world.set_height(pos, 4095);
+    let high = world.local_temperature_c(pos);
+    assert!(
+        high < low - 10.0,
+        "высота должна заметно снижать температуру: {low} -> {high}"
+    );
+}
+
 /// Генерация содержит все важные виды тайлов (не вырождается в один тип).
 #[test]
 fn generation_has_variety() {
@@ -156,7 +599,7 @@ fn generation_carves_rivers_through_land() {
         let mut has_river = false;
         for y in 0..n {
             for x in 0..n {
-                if w.terrain_kind(TilePos { x, y }) == TileType::Water
+                if w.terrain_kind(TilePos { x, y }) == TileType::River
                     && elevation_at(x, y, n, seed) > 0.52
                 {
                     has_river = true;
@@ -268,11 +711,8 @@ fn generation_spawns_wolves_on_land() {
             y: wolf.pos.y.floor() as i32,
         };
         assert!(
-            !matches!(
-                world.terrain_kind(tile),
-                TileType::Water | TileType::DeepWater | TileType::Ocean
-            ),
-            "волк появился в воде: {:?}",
+            !world.terrain_kind(tile).is_water(),
+            "волк появился в воде/льду: {:?}",
             tile
         );
         assert_eq!(wolf.hp, wolf.kind.max_hp());
@@ -333,16 +773,20 @@ fn generated_apple_trees_have_four_to_ten_fruits() {
 
 // --- Слой высот ---
 
-/// Кривая высот согласована с полосами рельефа: море 256, камень от 640,
-/// горы от 1280, верх диапазона 4095.
+/// Кривая высот согласована с новыми полосами рельефа: море 64, камень
+/// от 448, горы от 1088, верх диапазона 4095.
 #[test]
 fn height_curve_matches_terrain_bands() {
+    use crate::simulation::generation::height::{
+        ELEV_HIGH, ELEV_MOUNTAIN, ELEV_SEA, ELEV_STONE, MOUNTAIN_HEIGHT, SNOW_HEIGHT, STONE_HEIGHT,
+    };
     use crate::simulation::generation::height_for_elevation;
     use crate::simulation::heightmap::{HEIGHT_MAX, SEA_LEVEL};
 
-    assert_eq!(height_for_elevation(0.42), SEA_LEVEL);
-    assert_eq!(height_for_elevation(0.50), 640);
-    assert_eq!(height_for_elevation(0.56), 1280);
+    assert_eq!(height_for_elevation(ELEV_SEA), SEA_LEVEL);
+    assert_eq!(height_for_elevation(ELEV_STONE), STONE_HEIGHT);
+    assert_eq!(height_for_elevation(ELEV_MOUNTAIN), MOUNTAIN_HEIGHT);
+    assert_eq!(height_for_elevation(ELEV_HIGH), SNOW_HEIGHT);
     assert_eq!(height_for_elevation(1.0), HEIGHT_MAX);
     assert_eq!(height_for_elevation(0.0), 0);
     // Кривая монотонна и не выходит за диапазон.
@@ -359,6 +803,7 @@ fn height_curve_matches_terrain_bands() {
 /// высоте: море плоское, камень и горы — в своих полосах.
 #[test]
 fn generated_heights_fit_terrain_types() {
+    use crate::simulation::generation::height::{MOUNTAIN_HEIGHT, STONE_HEIGHT};
     use crate::simulation::heightmap::{HEIGHT_MAX, SEA_LEVEL};
 
     let world = generate_world(WorldSize::new(256), 999);
@@ -373,9 +818,13 @@ fn generated_heights_fit_terrain_types() {
                     ocean_count += 1;
                     assert_eq!(height, SEA_LEVEL, "океан должен быть плоским");
                 }
-                TileType::Stone => assert!(height >= 640, "камень ниже 640: {height}"),
-                TileType::Mountain => assert!(height >= 1280, "гора ниже 1280: {height}"),
-                TileType::Sand => assert!(height >= SEA_LEVEL - 16, "пляж ниже моря"),
+                TileType::Stone => {
+                    assert!(height >= STONE_HEIGHT, "камень ниже {STONE_HEIGHT}: {height}")
+                }
+                TileType::Mountain => assert!(
+                    height >= MOUNTAIN_HEIGHT,
+                    "гора ниже {MOUNTAIN_HEIGHT}: {height}"
+                ),
                 _ => {}
             }
         }

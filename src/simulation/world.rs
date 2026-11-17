@@ -3,11 +3,12 @@
 use std::collections::HashMap;
 
 use super::chunk::{Chunk, ResourceDeposit, TerrainTiles, CHUNK_SIZE};
+use super::climate::ClimateMap;
 use super::combat::{Projectile, StuckSpear};
 use super::containers::Container;
 use super::crops::Crop;
 use super::entities::{EntityStore, FaunaScratch, LandSearchScratch};
-use super::heightmap::HEIGHT_MAX;
+use super::heightmap::{HEIGHT_MAX, SEA_LEVEL};
 use super::item_entity::{ItemEntities, ItemEntity, ItemScratch};
 use super::items::ItemStack;
 use super::objects::WorldObject;
@@ -105,6 +106,9 @@ pub struct World {
     /// Локальный климат появится вместе с погодой. Читают UI и будущие
     /// потребности.
     pub ambient_temperature_c: f32,
+    /// Базовая карта температуры (широта + крупный шум) по ячейке 2×2.
+    /// Не сохраняется: детерминирована seed; высота применяется при чтении.
+    pub climate: ClimateMap,
     /// Снаряды в полёте (стрелы, брошенные копья) — см. `combat`.
     pub projectiles: Vec<Projectile>,
     /// Копья, воткнувшиеся в землю; живут до подбора игроком.
@@ -195,6 +199,7 @@ impl World {
         bytes += (self.stuck_spears.capacity() as u64) * size_of::<StuckSpear>();
         bytes += (self.item_entities.len() as u64) * size_of::<ItemEntity>();
         bytes += map_bytes::<TilePos, BuildingBreak>(self.building_breaks.len());
+        bytes += self.climate.memory_bytes();
         bytes
     }
 
@@ -209,6 +214,7 @@ impl World {
             chunks,
             entities: EntityStore::default(),
             ambient_temperature_c: 24.0,
+            climate: ClimateMap::new(size.tiles(), seed),
             projectiles: Vec::new(),
             stuck_spears: Vec::new(),
             next_projectile_id: 0,
@@ -281,6 +287,14 @@ impl World {
     #[inline]
     pub fn height_or(&self, pos: TilePos, fallback: u16) -> u16 {
         self.height(pos).unwrap_or(fallback)
+    }
+
+    /// Локальная температура в тайле, ℃: глобальный сезонный ambient +
+    /// широтная карта + падение с высотой. O(1), без обновления карты.
+    pub fn local_temperature_c(&self, pos: TilePos) -> f32 {
+        let height = self.height_or(pos, SEA_LEVEL);
+        self.climate
+            .local_temperature_c(self.ambient_temperature_c, pos.x, pos.y, height)
     }
 
     /// Записывает высоту тайла. Возвращает `true`, если значение изменилось.

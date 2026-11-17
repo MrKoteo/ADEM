@@ -20,6 +20,7 @@ pub mod item_entity;
 pub mod items;
 pub mod movement;
 pub mod moon;
+mod noise;
 pub mod needs;
 pub mod objects;
 pub mod rng;

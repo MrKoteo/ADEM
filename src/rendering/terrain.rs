@@ -1259,6 +1259,8 @@ fn build_fallback_block_mesh(
         Mesh::ATTRIBUTE_UV_0,
         atlas_uv_coordinates(tile_uv[index as usize]).to_vec(),
     );
+    // Верхняя грань: wall_t = 1, контактная тень выключена.
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, vec![[0.0, 1.0]; points.len()]);
     mesh.insert_indices(Indices::U16([0, 1, 2, 0, 2, 3].into()));
     // Нормали не считаем: материал terrain unlit (см. ensure_ground_material),
     // шейдер без атрибута нормали компилируется без VERTEX_NORMALS.
@@ -1448,6 +1450,8 @@ pub(crate) struct BlockMeshScratch {
 pub(crate) struct MeshBufferPool {
     positions: Vec<[f32; 3]>,
     uvs: Vec<[f32; 2]>,
+    /// Второй UV: `y` — доля высоты стенки от основания (0) до верха (1).
+    uv_b: Vec<[f32; 2]>,
     indices: Vec<u16>,
     colors: Vec<[f32; 4]>,
 }
@@ -1458,6 +1462,7 @@ impl MeshBufferPool {
         MeshBuffers {
             positions: std::mem::take(&mut self.positions),
             uvs: std::mem::take(&mut self.uvs),
+            uv_b: std::mem::take(&mut self.uv_b),
             indices: std::mem::take(&mut self.indices),
             colors: std::mem::take(&mut self.colors),
         }
@@ -1477,6 +1482,12 @@ impl MeshBufferPool {
             && values.capacity() > self.uvs.capacity()
         {
             self.uvs = values;
+        }
+        if let Some(VertexAttributeValues::Float32x2(values)) =
+            mesh.remove_attribute(Mesh::ATTRIBUTE_UV_1)
+            && values.capacity() > self.uv_b.capacity()
+        {
+            self.uv_b = values;
         }
         if let Some(VertexAttributeValues::Float32x4(values)) =
             mesh.remove_attribute(Mesh::ATTRIBUTE_COLOR)
@@ -1499,6 +1510,7 @@ impl MeshBufferPool {
 struct MeshBuffers {
     positions: Vec<[f32; 3]>,
     uvs: Vec<[f32; 2]>,
+    uv_b: Vec<[f32; 2]>,
     indices: Vec<u16>,
     colors: Vec<[f32; 4]>,
 }
@@ -1570,20 +1582,30 @@ pub(crate) fn build_block_mesh_cached(
     let MeshBuffers {
         mut positions,
         mut uvs,
+        mut uv_b,
         mut indices,
         mut colors,
     } = pool.take();
     positions.clear();
     uvs.clear();
+    uv_b.clear();
     indices.clear();
     colors.clear();
     positions.reserve(cells * cells * 4);
     uvs.reserve(cells * cells * 4);
+    uv_b.reserve(cells * cells * 4);
     indices.reserve(cells * cells * 6);
-    let mut push_quad = |points: [[f32; 3]; 4], texture_uvs: [[f32; 2]; 4]| {
+    let mut push_quad = |points: [[f32; 3]; 4], texture_uvs: [[f32; 2]; 4], is_wall: bool| {
         let base = positions.len() as u16;
         positions.extend(points);
         uvs.extend(texture_uvs);
+        // Порядок вершин квада: низ-низ-верх-верх для стенки; у верхней
+        // грани wall_t = 1 и контактная тень не рисуется.
+        uv_b.extend(if is_wall {
+            [[0.0, 0.0], [0.0, 0.0], [0.0, 1.0], [0.0, 1.0]]
+        } else {
+            [[0.0, 1.0]; 4]
+        });
         indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
     };
     let point = |x: f32, y: f32, elevation: f32| {
@@ -1615,6 +1637,7 @@ pub(crate) fn build_block_mesh_cached(
                     point(lx0, ly1, elevation),
                 ],
                 top_uv,
+                false,
             );
 
             // Очень низкие стенки (< 0.3 тайла) заливаем основным цветом
@@ -1686,7 +1709,7 @@ pub(crate) fn build_block_mesh_cached(
                 } else {
                     top_uv
                 };
-                push_quad(wall, wall_uv);
+                push_quad(wall, wall_uv, true);
             }
         }
     }
@@ -1698,6 +1721,9 @@ pub(crate) fn build_block_mesh_cached(
         }
         if uvs.capacity() > pool.uvs.capacity() {
             pool.uvs = uvs;
+        }
+        if uv_b.capacity() > pool.uv_b.capacity() {
+            pool.uv_b = uv_b;
         }
         if indices.capacity() > pool.indices.capacity() {
             pool.indices = indices;
@@ -1728,6 +1754,7 @@ pub(crate) fn build_block_mesh_cached(
         pool.colors = colors;
     }
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, uv_b);
     mesh.insert_indices(Indices::U16(indices));
     // Нормали не считаем: материал terrain unlit, освещение по нормалям
     // не считается, а без атрибута Bevy не включает VERTEX_NORMALS в шейдере.

@@ -8,7 +8,7 @@ use bevy::prelude::*;
 
 use crate::app::state::{ClockRes, GameState, SchedulerRes, TickTiming};
 use crate::rendering::RenderMetrics;
-use crate::simulation::moon;
+use crate::simulation::{TilePos, moon};
 use crate::ui::{style, text_input_focused};
 use crate::ui::UiFont;
 
@@ -98,12 +98,27 @@ fn update_fps(
         fps.frames = 0;
 
         let clock = &clock.0;
-        // Температура в месте игрока: пока это общая заглушка мира
-        // (ambient_temperature_c); с погодой значение станет локальным.
+        // Температура в месте игрока: локальная карта (широта + высота)
+        // плюс глобальный сезонный ambient. В наблюдателе — центр мира.
         let temperature = state
             .world
             .as_ref()
-            .map(|world| format!("{:.1} °C", world.ambient_temperature_c))
+            .map(|world| {
+                let tile = state
+                    .controlled_entity()
+                    .map(|entity| TilePos {
+                        x: entity.pos.x.floor() as i32,
+                        y: entity.pos.y.floor() as i32,
+                    })
+                    .unwrap_or_else(|| {
+                        let side = world.size.tiles() as i32;
+                        TilePos {
+                            x: side / 2,
+                            y: side / 2,
+                        }
+                    });
+                format!("{:.1} °C", world.local_temperature_c(tile))
+            })
             .unwrap_or_else(|| "--".to_string());
         // Луна: фаза (16 фаз по 2 суток, смена в полдень).
         let moon_phase = moon::phase_label(moon::phase(clock.tick));

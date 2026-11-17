@@ -10,7 +10,11 @@ fn terrain_ray_hits_the_tile_surface_height() {
     world.set_height(tile, 2000);
     let expected = height_to_world(2000);
     let point = intersect_terrain(
-        Vec3::new(2.5 * WORLD_TILE_SIZE, 3.5 * WORLD_TILE_SIZE, 500.0),
+        Vec3::new(
+            2.5 * WORLD_TILE_SIZE,
+            3.5 * WORLD_TILE_SIZE,
+            expected + 100.0,
+        ),
         Vec3::new(0.0, 0.0, -1.0),
         &world,
     )
@@ -83,16 +87,18 @@ fn terrain_ray_hits_the_other_visible_mountain_side() {
     assert!((point.point.z > 0.0) && (point.point.z < top));
 }
 
-/// Минимальный шаг рендера — 5 уровней (0.5 текселя при 10 уровнях = 1 px).
-/// Данные остаются точными, но более мелкие перепады не рисуются.
+/// Рендер больше не квантует высоты: каждый уровень — 0.5 текселя,
+/// 2 уровня — 1 тексель.
 #[test]
-fn render_height_step_is_half_texture_pixel() {
+fn every_height_level_is_rendered() {
     assert_eq!(height_to_world(0), 0.0);
-    assert_eq!(height_to_world(4), 0.0);
-    assert_eq!(height_to_world(5), 0.5);
-    assert_eq!(height_to_world(9), 0.5);
-    assert_eq!(height_to_world(10), 1.0);
-    assert_eq!(height_to_world(4095), 409.5);
+    assert_eq!(height_to_world(1), 0.5);
+    assert_eq!(height_to_world(2), 1.0);
+    assert_eq!(height_to_world(4), 2.0);
+    assert_eq!(height_to_world(4095), 2047.5);
+    // Шаг кисти соответствует новой минимальной единице: 2 уровня = 1 тексель.
+    assert_eq!(crate::app::state::HEIGHT_BRUSH_STEP, 2);
+    assert_eq!(HEIGHT_WORLD_UNIT * 2.0, 1.0);
 }
 
 /// Высота в мировых единицах линейна, а плоскость моря соответствует
@@ -100,7 +106,7 @@ fn render_height_step_is_half_texture_pixel() {
 #[test]
 fn heights_are_data_not_tile_types() {
     assert_eq!(height_to_world(0), 0.0);
-    assert!((height_to_world(1000) - 100.0).abs() < 1e-4);
+    assert!((height_to_world(1000) - 500.0).abs() < 1e-4);
     assert!((SEA_WORLD_HEIGHT - height_to_world(SEA_LEVEL)).abs() < 1e-4);
 
     let mut world = World::new(WorldSize::new(256), 1);
@@ -108,7 +114,7 @@ fn heights_are_data_not_tile_types() {
     world.set_terrain(tile, TileType::Grass);
     assert_eq!(terrain_elevation(&world, tile), 0.0);
     world.set_height(tile, 500);
-    assert!((terrain_elevation(&world, tile) - 50.0).abs() < 1e-4);
+    assert!((terrain_elevation(&world, tile) - 250.0).abs() < 1e-4);
     world.set_terrain(tile, TileType::Mountain);
-    assert!((terrain_elevation(&world, tile) - 50.0).abs() < 1e-4);
+    assert!((terrain_elevation(&world, tile) - 250.0).abs() < 1e-4);
 }
