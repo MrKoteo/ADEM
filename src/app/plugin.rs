@@ -13,8 +13,10 @@ use std::time::Duration;
 use crate::app::audio::AudioPlugin;
 use crate::app::camera::{CameraPlugin, OverlayCamera, WorldCamera};
 use crate::app::generation::{
-    WorldGeneration, poll_world_generation, start_initial_generation,
+    WorldGeneration, poll_world_generation, release_old_world_scheduler,
+    start_initial_generation,
 };
+use crate::app::generation_times::{GenerationTimes, times_path};
 use crate::app::input::InputPlugin;
 use crate::app::saves::SavesPlugin;
 use crate::app::settings::{
@@ -51,7 +53,7 @@ impl Plugin for AdemPlugin {
             .init_resource::<CommandQueueRes>()
             .init_resource::<EditorSelection>()
             .init_resource::<WorldGeneration>()
-            .add_message::<TickEvent>()
+            .insert_resource(GenerationTimes::load(&times_path()))
             .add_plugins(CameraPlugin)
             .add_plugins(RenderingPlugin)
             .add_plugins(UiPlugin)
@@ -64,6 +66,11 @@ impl Plugin for AdemPlugin {
                 Update,
                 (
                     poll_world_generation.before(SimTick),
+                    // После приёма мира: в кадре установки `generating` уже
+                    // false и чужой планировщик не должен затираться.
+                    release_old_world_scheduler
+                        .after(poll_world_generation)
+                        .before(SimTick),
                     handle_global_keys,
                     tick_world.in_set(SimTick),
                     // Ввод ставит команды в очередь — применение строго после.
@@ -150,7 +157,6 @@ fn tick_world(
     mut timing: ResMut<TickTiming>,
     book: Res<CraftBookRes>,
     mut fired: Local<Vec<(u64, Task)>>,
-    mut events: MessageWriter<TickEvent>,
 ) {
     // На паузе тики не генерируются и аккумулятор не растёт (GAME_DESIGN 3.3):
     // стоит и захваченное существо — оно часть мира. Пока идёт фоновая
@@ -306,11 +312,8 @@ fn tick_world(
     }
     state.dirty_tiles = dirty;
 
-    // Шина событий: исполненные задачи уходят слушателям (появятся позже).
-    // drain оставляет ёмкость вектора на следующий кадр.
-    for (tick, task) in fired.drain(..) {
-        events.write(TickEvent { tick, task });
-    }
+    // Ёмкость списка сохраняется: задачи исполняются каждый кадр.
+    fired.clear();
 
     // Время тика для UI: среднее по исполненным тикам кадра, сглаженное по кадрам.
     let ms_per_tick = started.elapsed().as_secs_f32() * 1000.0 / ticks as f32;
@@ -319,15 +322,6 @@ fn tick_world(
     } else {
         timing.avg_ms * 0.9 + ms_per_tick * 0.1
     };
-}
-
-/// Событие Bevy: задача планировщика исполнена на тике `tick`.
-/// Слушатели (поведение существ, эффекты) появятся позже; шина уже работает.
-#[allow(dead_code)] // У полей нет читателей, пока нет слушателей
-#[derive(Message)]
-pub struct TickEvent {
-    pub tick: u64,
-    pub task: Task,
 }
 
 /// Применяет команды контроллеров (UI, «бог», игрок) к миру.
@@ -344,6 +338,12 @@ pub(crate) fn apply_commands(
     book: Res<CraftBookRes>,
 ) {
     if queue.0.is_empty() {
+        return;
+    }
+    // Мира нет (идёт генерация нового): команды применять некуда, а копить
+    // их нельзя — иначе клики по пустому экрану сработают на новой карте.
+    if state.world.is_none() {
+        queue.0.clear();
         return;
     }
     let mut dirty = std::mem::take(&mut state.dirty_tiles);

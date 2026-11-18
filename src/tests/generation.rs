@@ -13,15 +13,15 @@ use crate::simulation::world::{TilePos, World, WorldSize};
 /// отмены даёт тот же мир, что и раньше.
 #[test]
 fn generation_stops_when_cancelled() {
-    assert!(generate_world_cancellable(WorldSize::new(256), 42, &|| true).is_none());
+    assert!(generate_world_cancellable(WorldSize::new(256), 42, &|| true, &|_| {}).is_none());
 
     let world = generate_world(WorldSize::new(256), 42);
     assert!(world.size.tiles() == 256);
     // Посев цепочек тоже отменяем: частичный планировщик использовать нельзя.
     let mut scheduler = Scheduler::default();
-    assert!(!seed_all_cancellable(&world, &mut scheduler, 100, &|| true));
+    assert!(!seed_all_cancellable(&world, &mut scheduler, 100, &|| true, &|_| {}));
     let mut scheduler = Scheduler::default();
-    assert!(seed_all_cancellable(&world, &mut scheduler, 100, &|| false));
+    assert!(seed_all_cancellable(&world, &mut scheduler, 100, &|| false, &|_| {}));
 }
 
 /// Считает объекты мира по видам. Обход HashMap не детерминирован,

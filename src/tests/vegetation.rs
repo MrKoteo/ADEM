@@ -175,3 +175,50 @@ fn editor_placed_dirt_gets_overgrown() {
         "поставленная земля должна зарасти травой"
     );
 }
+
+/// Оптимизированный посев (по чанкам, с прямыми чтениями слоёв) обязан
+/// ставить ровно те же цепочки, что и прежний наивный обход по тайлам через
+/// `terrain_kind`: тот же набор задач, те же тики и тот же порядок
+/// (row-major, порядок = id задач при равных тиках).
+#[test]
+fn chunkwise_seed_matches_naive_reference() {
+    use crate::simulation::Scheduler;
+    use crate::simulation::vegetation;
+    use crate::simulation::world::{ChunkPos, WorldSize};
+
+    let world = crate::simulation::generation::generate_world(WorldSize::new(256), 42);
+    let mut fast = Scheduler::default();
+    assert!(vegetation::seed_all_cancellable(&world, &mut fast, 100, &|| false, &|_| {}));
+
+    // Наивная ссылка — прежний путь: тайл за тайлом, чанк ищется по координатам.
+    let mut naive = Scheduler::default();
+    for y in 0..256 {
+        for x in 0..256 {
+            let pos = TilePos { x, y };
+            vegetation::schedule_grass_spread(&world, &mut naive, world.seed, 100, pos);
+            vegetation::schedule_water_erosion(&world, &mut naive, world.seed, 100, pos);
+        }
+    }
+    for cy in 0..world.chunks_per_side {
+        for cx in 0..world.chunks_per_side {
+            vegetation::schedule_bush_growth(
+                &world,
+                &mut naive,
+                world.seed,
+                100,
+                ChunkPos { x: cx, y: cy },
+            );
+        }
+    }
+
+    // Сравниваем исполненные задачи: тик и вид (id задач совпадают, т.к.
+    // порядок постановки тот же). До 4100 тика успевают сработать сотни цепочек.
+    let mut fast_fired = Vec::new();
+    let mut naive_fired = Vec::new();
+    for tick in 100..4100 {
+        fast.run_tick(tick, |task| fast_fired.push((tick, task.kind)));
+        naive.run_tick(tick, |task| naive_fired.push((tick, task.kind)));
+    }
+    assert!(fast_fired.len() > 100, "задач слишком мало для проверки");
+    assert_eq!(fast_fired, naive_fired);
+}

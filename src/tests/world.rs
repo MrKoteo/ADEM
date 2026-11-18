@@ -123,3 +123,44 @@ fn dirty_tiles_batch_keeps_remainder() {
     assert_eq!(rest.len(), 4);
     assert!(dirty.terrain.is_empty());
 }
+
+/// Разреженный слой чанка не занимает таблицу, пока пуст, и ведёт себя как
+/// карта: вставка/чтение/удаление, обход по ссылке, сохранение порядка
+/// (сортировка ключей делается потребителем). Загрузка сейва кладёт готовую
+/// таблицу через `from_map`, пустая — не аллоцирует.
+#[test]
+fn sparse_layer_behaves_like_map() {
+    use crate::simulation::chunk::SparseLayer;
+
+    let mut layer: SparseLayer<u16> = SparseLayer::new();
+    assert!(layer.is_empty());
+    assert_eq!(layer.get(&3), None);
+    assert_eq!(layer.insert(3, 30), None);
+    assert_eq!(layer.insert(7, 70), None);
+    assert_eq!(layer.insert(3, 31), Some(30));
+    assert_eq!(layer.len(), 2);
+    assert_eq!(layer.get(&3), Some(&31));
+    assert!(layer.contains_key(&7));
+    assert_eq!(layer.remove(&3), Some(31));
+    assert_eq!(layer.remove(&3), None);
+    assert_eq!(layer.len(), 1);
+
+    let mut visited: Vec<(u8, u16)> = (&layer).into_iter().map(|(k, v)| (*k, *v)).collect();
+    visited.sort_unstable();
+    assert_eq!(visited, vec![(7, 70)]);
+    assert_eq!(layer.keys().copied().collect::<Vec<_>>(), vec![7]);
+    assert_eq!(layer.values().copied().collect::<Vec<_>>(), vec![70]);
+
+    layer.retain(|_, value| *value > 100);
+    assert!(layer.is_empty());
+
+    let mut from_map = std::collections::HashMap::new();
+    assert!(SparseLayer::from_map(from_map.clone()).is_empty());
+    from_map.insert(1, 10);
+    assert_eq!(SparseLayer::from_map(from_map).len(), 1);
+
+    layer.insert(5, 50);
+    layer.clear();
+    assert!(layer.is_empty());
+    assert_eq!(layer.get(&5), None);
+}

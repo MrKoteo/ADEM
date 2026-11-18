@@ -16,7 +16,7 @@ use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use crate::app::state::{EditorSelection, GameMode, GameState, TickAccumulator, interpolate_pos};
 use crate::simulation::{BuildingKind, ChunkPos, EntityKind, Facing, ObjectKind, TilePos, World, WorldPos, CHUNK_SIZE, TILE_SIZE};
 
-use super::isometric::{WORLD_TILE_SIZE, height_to_world, world_position};
+use super::isometric::{MAX_WORLD_HEIGHT, WORLD_TILE_SIZE, height_to_world, world_position};
 use super::terrain::{BlockPos, lod_for_scale};
 use super::textures::{AtlasKind, AtlasTexture, TextureAtlases};
 
@@ -544,6 +544,71 @@ fn world_sprite_material(
     atlas_material(atlases, texture.kind, hurt_tint, sprite_assets, materials)
 }
 
+/// Консервативный отсекатель спрайтов в плоскости земли: две линейные
+/// проекции на экранные оси камеры вместо матричного `world_to_viewport`
+/// и поиска чанка ради высоты на каждую сущность. Точная проверка
+/// viewport'а остаётся второй ступенью, поэтому отсекатель обязан быть
+/// шире экрана: учитывает размер спрайта, наклон камеры (по вертикали
+/// экрана земля растянута) и разброс высот рельефа.
+pub(crate) struct GroundCull {
+    /// Положение камеры, спроецированное на плоскость земли (мировые px).
+    origin: Vec2,
+    /// Экранная горизонталь/вертикаль в координатах плоскости земли.
+    right: Vec2,
+    up: Vec2,
+    right_limit: f32,
+    up_min: f32,
+    up_max: f32,
+}
+
+impl GroundCull {
+    pub(crate) fn new(
+        camera_transform: &Transform,
+        ortho: &OrthographicProjection,
+        viewport: Vec2,
+        margin_world_px: f32,
+    ) -> Self {
+        let rotation = camera_transform.rotation;
+        let right = (rotation * Vec3::X).truncate();
+        let up = (rotation * Vec3::Y).truncate();
+        let up_axis = rotation * Vec3::Y;
+        let half = viewport * (ortho.scale * 0.5);
+        let margin = margin_world_px;
+        // Вклад высоты рельефа (0..MAX_WORLD_HEIGHT) в экранную вертикаль:
+        // точки на разной высоте проецируются в разные строки.
+        let z_low = up_axis.z * (0.0 - camera_transform.translation.z);
+        let z_high = up_axis.z * (MAX_WORLD_HEIGHT - camera_transform.translation.z);
+        let (z_low, z_high) = if z_low <= z_high {
+            (z_low, z_high)
+        } else {
+            (z_high, z_low)
+        };
+        // `right.z` у изометрической камеры нулевой, но запас на всякий
+        // случай оставляем: отсекатель не должен резать видимое.
+        let right_limit = half.x + margin + (rotation * Vec3::X).z.abs() * MAX_WORLD_HEIGHT;
+        Self {
+            origin: camera_transform.translation.truncate(),
+            right,
+            up,
+            right_limit,
+            up_min: -(half.y + margin) - z_high,
+            up_max: (half.y + margin) - z_low,
+        }
+    }
+
+    /// Может ли точка земли `ground` (мировые px) попасть на экран.
+    #[inline]
+    pub(crate) fn contains(&self, ground: Vec2) -> bool {
+        let delta = ground - self.origin;
+        let horizontal = self.right.dot(delta);
+        if horizontal.abs() > self.right_limit {
+            return false;
+        }
+        let vertical = self.up.dot(delta);
+        vertical >= self.up_min && vertical <= self.up_max
+    }
+}
+
 /// Спрайт игрока больше не нужен отдельной сущностью: по целевому формату
 /// игрок — это захваченное существо мира и рисуется общим кодом спрайтов
 /// существ (`update_entity_sprites`), текстура — `human.png`.
@@ -560,6 +625,8 @@ pub(crate) fn update_item_entity_sprites(
     mut sprites: ResMut<ItemEntitySprites>,
     camera: Query<(&Camera, &Transform, &Projection), (With<Camera2d>, Without<EntitySprite>)>,
     sprite_transforms: Query<&mut Transform, With<EntitySprite>>,
+    mut visible: Local<HashSet<u64>>,
+    mut stale: Local<Vec<u64>>,
 ) {
     let Some(world) = state.world.as_ref() else {
         // Во время фонового сохранения мир временно в потоке: спрайты не
@@ -589,8 +656,15 @@ pub(crate) fn update_item_entity_sprites(
     let mut sprite_transforms: Query<&mut Transform, With<EntitySprite>> = sprite_transforms;
     // Спрайты создаются только для видимых предметов: дроп может лежать
     // в любом месте мира, и Bevy-сущность на каждый предмет не нужна.
-    let mut visible = HashSet::with_capacity(world.item_entities.len());
+    // Грубый отсекатель по плоскости земли снимает матрицу и поиск чанка
+    // с подавляющего большинства предметов; множество переиспользуется.
+    let cull = GroundCull::new(camera_transform, ortho, viewport_size, margin_px);
+    visible.clear();
     for entity in &world.item_entities.items {
+        let ground = Vec2::new(entity.pos.x, entity.pos.y) * WORLD_TILE_SIZE;
+        if !cull.contains(ground) {
+            continue;
+        }
         let item_world = world_position(world, Vec2::new(entity.pos.x, entity.pos.y));
         let Ok(viewport_pos) = camera.world_to_viewport(&camera_global, item_world) else {
             continue;
@@ -605,13 +679,15 @@ pub(crate) fn update_item_entity_sprites(
         visible.insert(entity.id);
     }
     // Снятие спрайтов подобранных/исчезнувших/ушедших с экрана предметов.
-    let stale: Vec<u64> = sprites
-        .map
-        .keys()
-        .copied()
-        .filter(|id| !visible.contains(id))
-        .collect();
-    for id in stale {
+    stale.clear();
+    stale.extend(
+        sprites
+            .map
+            .keys()
+            .copied()
+            .filter(|id| !visible.contains(id)),
+    );
+    for id in stale.drain(..) {
         if let Some((entity, _)) = sprites.map.remove(&id) {
             commands.entity(entity).despawn();
         }
@@ -668,6 +744,8 @@ pub(crate) fn update_entity_sprites(
     mut sprites: ResMut<EntitySprites>,
     mut flashes: ResMut<HurtFlashes>,
     camera: Query<(&Camera, &Transform, &Projection), With<Camera2d>>,
+    mut visible: Local<HashSet<u64>>,
+    mut stale: Local<Vec<u64>>,
 ) {
     let Some(world) = state.world.as_ref() else {
         if state.saving {
@@ -707,9 +785,14 @@ pub(crate) fn update_entity_sprites(
         *timer > 0.0
     });
 
-    let mut visible = HashSet::with_capacity(world.entities.len());
+    visible.clear();
+    let cull = GroundCull::new(camera_transform, ortho, viewport_size, sprite_margin_px);
     for entity in world.entities.iter() {
         let pos = interpolate_pos(entity.prev_pos, entity.pos, &acc);
+        let ground = Vec2::new(pos.x, pos.y) * WORLD_TILE_SIZE;
+        if !cull.contains(ground) {
+            continue;
+        }
         let world_pos = world_position(world, Vec2::new(pos.x, pos.y));
         let Ok(viewport_pos) = camera.world_to_viewport(&camera_global, world_pos) else {
             continue;
@@ -835,13 +918,15 @@ pub(crate) fn update_entity_sprites(
         }
     }
 
-    let stale: Vec<u64> = sprites
-        .map
-        .keys()
-        .copied()
-        .filter(|id| !visible.contains(id))
-        .collect();
-    for id in stale {
+    stale.clear();
+    stale.extend(
+        sprites
+            .map
+            .keys()
+            .copied()
+            .filter(|id| !visible.contains(id)),
+    );
+    for id in stale.drain(..) {
         if let Some(entity) = sprites.map.remove(&id) {
             commands.entity(entity).despawn();
         }
@@ -1184,17 +1269,20 @@ impl BlockDecor {
         materials: &mut Assets<StandardMaterial>,
         sprite_assets: &mut WorldSpriteAssets,
         font: &Handle<Font>,
-    ) {
+    ) -> Vec<Handle<Mesh>> {
         let items = self.items.into_mesh();
         let sprites = self.sprites.into_mesh();
+        let mut handles = Vec::with_capacity(2);
         parent.with_children(|parent| {
             for (kind, mesh) in [(AtlasKind::Items, items), (AtlasKind::Sprites, sprites)] {
                 let Some(mesh) = mesh else {
                     continue;
                 };
                 let material = atlas_material(atlases, kind, false, sprite_assets, materials);
+                let handle = meshes.add(mesh);
+                handles.push(handle.clone());
                 parent.spawn((
-                    Mesh3d(meshes.add(mesh)),
+                    Mesh3d(handle),
                     MeshMaterial3d(material),
                     Transform::default(),
                 ));
@@ -1217,6 +1305,7 @@ impl BlockDecor {
                 ));
             }
         });
+        handles
     }
 }
 
@@ -1235,7 +1324,7 @@ pub(crate) fn spawn_block_decor(
     camera_rotation: Quat,
     atlases: &TextureAtlases,
     font: &Handle<Font>,
-) {
+) -> Vec<Handle<Mesh>> {
     let offsets = sprite_assets.decor_offsets(camera_rotation);
     let mut decor = BlockDecor::default();
     collect_objects(
@@ -1260,7 +1349,7 @@ pub(crate) fn spawn_block_decor(
         camera_rotation,
         offsets,
     );
-    decor.spawn(parent, atlases, meshes, materials, sprite_assets, font);
+    decor.spawn(parent, atlases, meshes, materials, sprite_assets, font)
 }
 
 /// Собирает объекты блока в батч. Объекты и постройки — camera-facing

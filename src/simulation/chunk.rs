@@ -68,6 +68,85 @@ pub struct ResourceDeposit {
     pub amount: u16,
 }
 
+/// Разреженный слой чанка: «линейный индекс тайла → значение».
+///
+/// Пять `HashMap` в каждом чанке занимают ~240 байт **даже пустыми**
+/// (структура hashbrown). На 16384² это миллион чанков и сотни мегабайт
+/// впустую, хотя объекты/предметы/культуры есть на доле процента тайлов.
+/// Слой выделяет таблицу при первой записи и не занимает ничего, пока пуст.
+/// API повторяет нужную часть `HashMap`, чтобы код-потребитель не менялся.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+// Box здесь намеренный: цель — убрать 48-байтный заголовок таблицы из
+// каждого чанка, пока слой пуст (см. комментарий выше).
+#[allow(clippy::box_collection)]
+pub struct SparseLayer<T> {
+    map: Option<Box<HashMap<u8, T>>>,
+}
+
+impl<T> SparseLayer<T> {
+    /// Пустой слой (без таблицы).
+    pub fn new() -> Self {
+        Self { map: None }
+    }
+    /// Слой из уже собранной таблицы (загрузка сейва); пустая — без таблицы.
+    pub fn from_map(map: HashMap<u8, T>) -> Self {
+        Self {
+            map: (!map.is_empty()).then(|| Box::new(map)),
+        }
+    }
+    pub fn get(&self, key: &u8) -> Option<&T> {
+        self.map.as_ref().and_then(|map| map.get(key))
+    }
+    pub fn get_mut(&mut self, key: &u8) -> Option<&mut T> {
+        self.map.as_mut().and_then(|map| map.get_mut(key))
+    }
+    pub fn contains_key(&self, key: &u8) -> bool {
+        self.get(key).is_some()
+    }
+    /// Вставляет значение, выделяя таблицу при первой записи.
+    pub fn insert(&mut self, key: u8, value: T) -> Option<T> {
+        self.map
+            .get_or_insert_with(|| Box::new(HashMap::new()))
+            .insert(key, value)
+    }
+    pub fn remove(&mut self, key: &u8) -> Option<T> {
+        self.map.as_mut().and_then(|map| map.remove(key))
+    }
+    pub fn len(&self) -> usize {
+        self.map.as_ref().map_or(0, |map| map.len())
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    pub fn iter(&self) -> impl Iterator<Item = (&u8, &T)> {
+        self.map.iter().flat_map(|map| map.iter())
+    }
+    pub fn keys(&self) -> impl Iterator<Item = &u8> {
+        self.map.iter().flat_map(|map| map.keys())
+    }
+    pub fn values(&self) -> impl Iterator<Item = &T> {
+        self.map.iter().flat_map(|map| map.values())
+    }
+    pub fn retain(&mut self, mut keep: impl FnMut(&u8, &mut T) -> bool) {
+        if let Some(map) = &mut self.map {
+            map.retain(|key, value| keep(key, value));
+        }
+    }
+    /// Освобождает таблицу целиком (память возвращается аллокатору).
+    pub fn clear(&mut self) {
+        self.map = None;
+    }
+}
+
+impl<'a, T> IntoIterator for &'a SparseLayer<T> {
+    type Item = (&'a u8, &'a T);
+    type IntoIter = std::iter::Flatten<std::option::IntoIter<&'a HashMap<u8, T>>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.map.as_deref().into_iter().flatten()
+    }
+}
+
 /// Чанк 16×16. Рельеф — плотный слой со сжатием; остальные слои —
 /// разреженные: они занимают малую долю тайлов, и плотный массив на каждый
 /// слой раздувал бы память на порядки (ARCHITECTURE 2.2).
@@ -77,16 +156,16 @@ pub struct Chunk {
     /// Высоты тайлов 0..255 (0 — океан/море по умолчанию).
     pub heights: Heightmap,
     /// Ресурсы по линейному индексу тайла 0..256.
-    pub resources: HashMap<u8, ResourceDeposit>,
+    pub resources: SparseLayer<ResourceDeposit>,
     /// Объекты по линейному индексу тайла 0..256. Правило: один объект на тайл.
-    pub objects: HashMap<u8, WorldObject>,
+    pub objects: SparseLayer<WorldObject>,
     /// Предметы, лежащие на тайлах (дроп). Разреженный слой, как ресурсы.
-    pub items: HashMap<u8, ItemStack>,
+    pub items: SparseLayer<ItemStack>,
     /// Культуры на пашне по линейному индексу тайла (одна культура на тайл).
-    pub crops: HashMap<u8, Crop>,
+    pub crops: SparseLayer<Crop>,
     /// Контейнеры станций и складов (печи, бочка, склад, костёр).
     /// Существуют только у тайлов со станцией-объектом.
-    pub containers: HashMap<u8, Container>,
+    pub containers: SparseLayer<Container>,
 }
 
 impl Chunk {
@@ -95,11 +174,11 @@ impl Chunk {
         Self {
             terrain: TerrainTiles::uniform(TileType::Empty),
             heights: Heightmap::uniform(0),
-            resources: HashMap::new(),
-            objects: HashMap::new(),
-            items: HashMap::new(),
-            crops: HashMap::new(),
-            containers: HashMap::new(),
+            resources: SparseLayer::new(),
+            objects: SparseLayer::new(),
+            items: SparseLayer::new(),
+            crops: SparseLayer::new(),
+            containers: SparseLayer::new(),
         }
     }
 }

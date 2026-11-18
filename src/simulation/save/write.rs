@@ -2,7 +2,7 @@
 //! Разделы формата — в doc-комментарии `save/mod.rs`; порядок записи
 //! должен совпадать с порядком чтения `read.rs` до байта.
 
-use crate::simulation::chunk::TerrainTiles;
+use crate::simulation::chunk::{SparseLayer, TerrainTiles};
 use crate::simulation::heightmap::Heightmap;
 use crate::simulation::entities::{EntityStore, HumanMind};
 use crate::simulation::items::{ItemStack, MISC_SLOTS};
@@ -122,10 +122,10 @@ pub fn save_game(
 
     w
 }
-/// Пишет разреженный слой `HashMap<u8, T>` по возрастанию индексов.
+/// Пишет разреженный слой по возрастанию индексов.
 fn write_sparse_u16<T, F: Fn(&T) -> (u8, u16)>(
     w: &mut Vec<u8>,
-    map: &std::collections::HashMap<u8, T>,
+    map: &SparseLayer<T>,
     fields: F,
 ) {
     let count = map.len();
@@ -135,7 +135,7 @@ fn write_sparse_u16<T, F: Fn(&T) -> (u8, u16)>(
     let mut indices: Vec<u8> = map.keys().copied().collect();
     indices.sort_unstable();
     for idx in indices {
-        let value = &map[&idx];
+        let value = map.get(&idx).expect("индекс взят из этого же слоя");
         w.push(idx);
         let (kind, amount) = fields(value);
         w.push(kind);
@@ -145,7 +145,7 @@ fn write_sparse_u16<T, F: Fn(&T) -> (u8, u16)>(
 /// Пишет разреженный слой объектов.
 fn write_sparse_objects(
     w: &mut Vec<u8>,
-    map: &std::collections::HashMap<u8, WorldObject>,
+    map: &SparseLayer<WorldObject>,
 ) {
     let count = map.len();
     debug_assert!(count <= u16::MAX as usize);
@@ -153,7 +153,7 @@ fn write_sparse_objects(
     let mut indices: Vec<u8> = map.keys().copied().collect();
     indices.sort_unstable();
     for idx in indices {
-        let obj = &map[&idx];
+        let obj = map.get(&idx).expect("индекс взят из этого же слоя");
         w.push(idx);
         w.push(obj.kind.discriminant());
         w.push(obj.stage as u8);
@@ -161,14 +161,14 @@ fn write_sparse_objects(
     }
 }
 /// Пишет разреженный слой предметов на земле.
-fn write_sparse_items(w: &mut Vec<u8>, map: &std::collections::HashMap<u8, ItemStack>) {
+fn write_sparse_items(w: &mut Vec<u8>, map: &SparseLayer<ItemStack>) {
     let count = map.len();
     debug_assert!(count <= u16::MAX as usize);
     write_u16(w, count as u16);
     let mut indices: Vec<u8> = map.keys().copied().collect();
     indices.sort_unstable();
     for idx in indices {
-        let stack = &map[&idx];
+        let stack = map.get(&idx).expect("индекс взят из этого же слоя");
         w.push(idx);
         w.push(stack.kind as u8);
         write_u32(w, stack.count);
@@ -236,14 +236,14 @@ fn write_slots(w: &mut Vec<u8>, slots: &[Option<ItemStack>]) {
     }
 }
 /// Пишет разреженный слой культур (по возрастанию индексов).
-fn write_sparse_crops(w: &mut Vec<u8>, map: &std::collections::HashMap<u8, crate::simulation::crops::Crop>) {
+fn write_sparse_crops(w: &mut Vec<u8>, map: &SparseLayer<crate::simulation::crops::Crop>) {
     let count = map.len();
     debug_assert!(count <= u16::MAX as usize);
     write_u16(w, count as u16);
     let mut indices: Vec<u8> = map.keys().copied().collect();
     indices.sort_unstable();
     for idx in indices {
-        let crop = &map[&idx];
+        let crop = map.get(&idx).expect("индекс взят из этого же слоя");
         w.push(idx);
         w.push(crop.kind as u8);
         w.push(crop.stage);
@@ -252,7 +252,7 @@ fn write_sparse_crops(w: &mut Vec<u8>, map: &std::collections::HashMap<u8, crate
 /// Пишет разреженный слой контейнеров станций (по возрастанию индексов).
 fn write_sparse_containers(
     w: &mut Vec<u8>,
-    map: &std::collections::HashMap<u8, crate::simulation::containers::Container>,
+    map: &SparseLayer<crate::simulation::containers::Container>,
 ) {
     let count = map.len();
     debug_assert!(count <= u16::MAX as usize);
@@ -260,7 +260,7 @@ fn write_sparse_containers(
     let mut indices: Vec<u8> = map.keys().copied().collect();
     indices.sort_unstable();
     for idx in indices {
-        let container = &map[&idx];
+        let container = map.get(&idx).expect("индекс взят из этого же слоя");
         w.push(idx);
         // Вид станции не пишем: он восстановим из слоя объектов, но для
         // независимой проверки валидности слотов пишем явно.

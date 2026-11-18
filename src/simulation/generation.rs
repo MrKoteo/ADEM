@@ -45,23 +45,42 @@ pub(crate) use height::{elevation_at, height_for_elevation};
 /// Масштаб шума мха, тайлов: мелкий масштаб даёт пятна-области, а не крап.
 const MOSS_SCALE: f32 = 20.0;
 /// Порог мшистости: доля лесной травы, зарастающей мхом.
-const MOSS_THRESHOLD: f32 = 0.62;
+/// Меньше - больше мха.
+const MOSS_THRESHOLD: f32 = 0.64;
 /// Максимальная ширина пляжа от воды, тайлов.
 const BEACH_MAX_DIST: u8 = 2;
 
 /// Сгенерировать мир: рельеф + вода + ресурсы + объекты + существа.
 #[allow(dead_code)] // синхронный вариант для тестов; игра идёт через cancellable
 pub fn generate_world(size: WorldSize, seed: u64) -> World {
-    generate_world_cancellable(size, seed, &|| false)
+    generate_world_cancellable(size, seed, &|| false, &|_| {})
         .expect("generation without cancellation always completes")
 }
 
-/// Генерация мира с проверкой отмены на каждом проходе.
+/// Доли прогресса этапов генерации (аргумент колбэка — 0..=1). Значения
+/// подобраны по замерам: долгие проходы — базовые высоты, гидрология и
+/// береговая карта; остальные двигают планку мелкими шагами.
+const STAGE_HEIGHTS: f32 = 0.25;
+const STAGE_SMOOTH: f32 = 0.30;
+const STAGE_ERODE: f32 = 0.34;
+const STAGE_HYDROLOGY: f32 = 0.62;
+const STAGE_COAST: f32 = 0.72;
+const STAGE_SHORE_RAMP: f32 = 0.76;
+const STAGE_SLOPE: f32 = 0.79;
+const STAGE_RAISE: f32 = 0.81;
+const STAGE_CLASSIFY: f32 = 0.92;
+const STAGE_CONTENT: f32 = 0.96;
+const STAGE_WILDLIFE: f32 = 0.98;
+
+/// Генерация мира с проверкой отмены на каждом проходе и отчётом о прогрессе
+/// (`progress` получает долю 0..=1 — для прогресс-бара в UI).
 pub fn generate_world_cancellable(
     size: WorldSize,
     seed: u64,
     cancelled: &dyn Fn() -> bool,
+    progress: &dyn Fn(f32),
 ) -> Option<World> {
+    progress(0.0);
     let mut world = World::new(size, seed);
     let n = size.tiles() as i32;
     let archetype = MapArchetype::for_seed(seed);
@@ -69,44 +88,73 @@ pub fn generate_world_cancellable(
     let mut heights = HeightField::new(n as usize);
     // Глубина ниже уровня моря по исходной высоте: только для поиска моря.
     let mut sea_depth = vec![0_u8; (n * n) as usize];
-    if !fill_base_heights(&mut heights, &mut sea_depth, n, seed, archetype, cancelled) {
+    if !fill_base_heights(
+        &mut heights,
+        &mut sea_depth,
+        n,
+        seed,
+        archetype,
+        cancelled,
+        &|fraction| progress(STAGE_HEIGHTS * fraction),
+    ) {
         return None;
     }
+    progress(STAGE_HEIGHTS);
     // Плавность до квантования: глобальное сглаживание и эрозия в u16.
     if !smooth_heights(&mut heights, &sea_depth, n, cancelled) {
         return None;
     }
+    progress(STAGE_SMOOTH);
     if !erode_thermal(&mut heights, &sea_depth, n, cancelled) {
         return None;
     }
+    progress(STAGE_ERODE);
     let mut water = build_hydrology(&mut heights, &sea_depth, n, cancelled)?;
+    progress(STAGE_HYDROLOGY);
     // Единая карта берега: расстояние до воды/суши, уровень и вид ближайшей
     // воды. Используется глубиной, пляжами, влажностью и береговым пандусом.
     let coast = CoastField::build(&heights, &water, n, cancelled)?;
+    progress(STAGE_COAST);
     apply_water_depth(&mut water, &coast);
     if !apply_shore_ramp(&mut heights, &coast, n, cancelled) {
         return None;
     }
+    progress(STAGE_SHORE_RAMP);
     if !limit_soil_slope(&mut heights, &water, n, cancelled) {
         return None;
     }
+    progress(STAGE_SLOPE);
     if !raise_land_above_water(&mut heights, &water, n, cancelled) {
         return None;
     }
+    progress(STAGE_RAISE);
 
-    if !classify_and_write(&mut world, &heights, &water, &coast, seed, cancelled) {
+    // Классификация — построчный обход чанков: прогресс внутри этапа, чтобы
+    // планка не замирала на самом долгом после гидрологии проходе.
+    let span = STAGE_CLASSIFY - STAGE_RAISE;
+    let classify_progress = |fraction: f32| progress(STAGE_RAISE + span * fraction);
+    if !classify_and_write(
+        &mut world,
+        &heights,
+        &water,
+        &coast,
+        seed,
+        cancelled,
+        &classify_progress,
+    ) {
         return None;
     }
+    progress(STAGE_CLASSIFY);
     if !place_content(&mut world, &heights, seed, cancelled) {
         return None;
     }
+    progress(STAGE_CONTENT);
 
     let mut rng = StdRng::seed_from_u64(seed ^ 0x5EED_AAAA_BBBB_CCCC);
-    if !spawn_wildlife(&mut world, &mut rng, cancelled)
-        || !spawn_rabbits(&mut world, &mut rng, cancelled)
-    {
+    if !spawn_wildlife(&mut world, &mut rng, cancelled) || !spawn_rabbits(&mut world, &mut rng, cancelled) {
         return None;
     }
+    progress(STAGE_WILDLIFE);
 
     // Однородные чанки (океаны, плато) схлопываем в Uniform — экономия ОЗУ.
     let chunks_per_side = world.chunks_per_side as usize;
@@ -116,7 +164,13 @@ pub fn generate_world_cancellable(
         }
         chunk.terrain.try_compress();
         chunk.heights.try_compress();
+        if index % chunks_per_side == 0 {
+            progress(
+                STAGE_WILDLIFE + (1.0 - STAGE_WILDLIFE) * (index / chunks_per_side) as f32 / chunks_per_side as f32,
+            );
+        }
     }
+    progress(1.0);
 
     Some(world)
 }
@@ -129,6 +183,7 @@ fn classify_and_write(
     coast: &CoastField,
     seed: u64,
     cancelled: &dyn Fn() -> bool,
+    progress: &dyn Fn(f32),
 ) -> bool {
     let n = world.size.tiles() as i32;
     let width = n as usize;
@@ -155,6 +210,9 @@ fn classify_and_write(
     for cy in 0..chunks_per_side {
         if cy % 8 == 0 && cancelled() {
             return false;
+        }
+        if cy % 8 == 0 {
+            progress(cy as f32 / chunks_per_side as f32);
         }
         for cx in 0..chunks_per_side {
             let chunk_index = cy * chunks_per_side + cx;

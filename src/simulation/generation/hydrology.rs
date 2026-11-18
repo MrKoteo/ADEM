@@ -35,12 +35,10 @@ impl WaterKind {
     pub(crate) fn is_water(self) -> bool {
         self != Self::None
     }
-
     #[inline]
     pub(crate) fn is_sea(self) -> bool {
         matches!(self, Self::SeaShallow | Self::SeaDeep | Self::SeaOcean)
     }
-
     #[inline]
     pub(crate) fn is_lake(self) -> bool {
         matches!(self, Self::Lake | Self::LakeDeep)
@@ -55,7 +53,11 @@ const LAKE_MIN_DEPTH: u16 = HEIGHT_SUB * 2;
 const LAKE_MIN_COARSE: usize = 4;
 /// Минимальный водоём внутри суши: более мелкие «лужи» на нулевой высоте
 /// поднимаются до суши, чтобы не оставлять однотайловые дыры.
-const MIN_INLAND_WATER_TILES: usize = 12;
+const MIN_INLAND_WATER_TILES: usize = 14;
+/// Верхний предел площади bbox для точного flood озера. Если депрессия
+/// гигантская, точный flood в bbox занял бы слишком много памяти; тогда
+/// используется ограниченная грубая область.
+const MAX_LAKE_BBOX_TILES: usize = 4_000_000;
 
 const NEIGHBORS_4: [(i32, i32); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
 
@@ -88,12 +90,10 @@ impl BitGrid {
             words: vec![0; side * side / 64 + 1],
         }
     }
-
     #[inline]
     fn get(&self, index: usize) -> bool {
         self.words[index / 64] & (1 << (index % 64)) != 0
     }
-
     #[inline]
     fn set(&mut self, index: usize) {
         self.words[index / 64] |= 1 << (index % 64);
@@ -127,6 +127,13 @@ impl HeightQueue {
             self.level += 1;
         }
         None
+    }
+
+    fn clear(&mut self) {
+        for bucket in &mut self.buckets {
+            bucket.clear();
+        }
+        self.level = 0;
     }
 }
 
@@ -241,7 +248,6 @@ pub(crate) fn build_hydrology(
     for index in 0..cw * cw {
         is_lake[index] = filled[index] > coarse[index].saturating_add(LAKE_MIN_DEPTH);
     }
-    let mut lake_level = vec![0_u16; cw * cw];
     let mut lake_region = vec![0_u32; cw * cw];
     let mut lake_seen = BitGrid::new(cw);
     let mut lake_seeds = Vec::new();
@@ -254,10 +260,20 @@ pub(crate) fn build_hydrology(
         let mut region = Vec::new();
         let mut queue = VecDeque::new();
         queue.push_back(start);
+        let mut min_cx = cw;
+        let mut min_cy = cw;
+        let mut max_cx = 0_usize;
+        let mut max_cy = 0_usize;
         while let Some(cell) = queue.pop_front() {
             region.push(cell);
-            let cx = (cell % cw) as i32;
-            let cy = (cell / cw) as i32;
+            let cx = cell % cw;
+            let cy = cell / cw;
+            min_cx = min_cx.min(cx);
+            min_cy = min_cy.min(cy);
+            max_cx = max_cx.max(cx);
+            max_cy = max_cy.max(cy);
+            let cx = cx as i32;
+            let cy = cy as i32;
             for (dx, dy) in NEIGHBORS_8 {
                 let nx = cx + dx;
                 let ny = cy + dy;
@@ -279,11 +295,10 @@ pub(crate) fn build_hydrology(
             .map(|&cell| filled[cell])
             .max()
             .unwrap_or(SEA_LEVEL as u16);
-        let mut lowest = region[0];
         let region_id = next_region;
         next_region += 1;
+        let mut lowest = region[0];
         for &cell in &region {
-            lake_level[cell] = level;
             lake_region[cell] = region_id;
             if coarse[cell] < coarse[lowest] {
                 lowest = cell;
@@ -291,11 +306,22 @@ pub(crate) fn build_hydrology(
         }
         let cx = (lowest % cw) as i32;
         let cy = (lowest / cw) as i32;
+        // Bounding box региона в тайлах полной сетки (без отступа).
+        let x0 = (min_cx * step as usize) as i32;
+        let y0 = (min_cy * step as usize) as i32;
+        let x1 = (((max_cx + 1) * step as usize) as i32).min(size);
+        let y1 = (((max_cy + 1) * step as usize) as i32).min(size);
+        let max_area = (region.len() * (step as usize) * (step as usize) * 3).max(256);
         lake_seeds.push((
             cx * step + step / 2,
             cy * step + step / 2,
-            level,
             region_id,
+            level,
+            max_area,
+            x0,
+            y0,
+            x1,
+            y1,
         ));
     }
 
@@ -306,18 +332,24 @@ pub(crate) fn build_hydrology(
     // 6. Озёра на полной сетке: заливаем связные низины до уровня перелива.
     // Без произвольного `cap`: иначе край озера обрезается прямоугольником
     // по сетке, и получаются «квадратные» водоёмы.
-    for (sx, sy, level, region_id) in lake_seeds {
-        if !flood_lake(
+    for (sx, sy, region_id, coarse_level, max_area, x0, y0, x1, y1) in lake_seeds {
+        if !fill_lake_region(
             field,
             &mut water,
-            size,
+            &mut queue,
             sx,
             sy,
-            level,
             region_id,
+            coarse_level,
+            max_area,
             &lake_region,
             cw,
             step,
+            x0,
+            y0,
+            x1,
+            y1,
+            size,
             cancelled,
         ) {
             return None;
@@ -341,7 +373,7 @@ pub(crate) fn build_hydrology(
         &filled,
         &parent,
         &accumulation,
-        &lake_level,
+        &lake_region,
         cw,
         step,
         size,
@@ -401,9 +433,273 @@ fn flood_sea(
 /// Заливает озеро на полной сетке до уровня перелива. Без `cap`: вода
 /// останавливается только на уровне перелива, а не на границе произвольной
 /// площади. `level` — поверхность озера в подуровнях.
-#[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
-fn flood_lake(
+/// 
+/// Заливает озеро точным priority-flood на полной сетке в его bounding box.
+/// Грубая область используется только как подсказка, где искать озеро:
+/// граница воды — настоящий контур `height < уровень перелива`, без сетки
+/// 4×4. Если вода дошла до края bbox, bbox расширяется и flood повторяется.
+fn fill_lake_region(
+    field: &mut HeightField,
+    water: &mut [WaterKind],
+    queue: &mut HeightQueue,
+    seed_x: i32,
+    seed_y: i32,
+    region_id: u32,
+    coarse_level: u16,
+    max_area: usize,
+    lake_region: &[u32],
+    cw: usize,
+    step: i32,
+    mut x0: i32,
+    mut y0: i32,
+    mut x1: i32,
+    mut y1: i32,
+    size: i32,
+    cancelled: &dyn Fn() -> bool,
+) -> bool {
+    if seed_x < 0 || seed_y < 0 || seed_x >= size || seed_y >= size {
+        return true;
+    }
+    for attempt in 0..4 {
+        x0 = x0.clamp(0, size - 1);
+        y0 = y0.clamp(0, size - 1);
+        x1 = x1.clamp(x0 + 1, size);
+        y1 = y1.clamp(y0 + 1, size);
+        let w = (x1 - x0) as usize;
+        let h = (y1 - y0) as usize;
+        if w < 2 || h < 2 {
+            return true;
+        }
+        if w * h > MAX_LAKE_BBOX_TILES {
+            return fill_lake_bounded(
+                field,
+                water,
+                size,
+                seed_x,
+                seed_y,
+                coarse_level,
+                region_id,
+                lake_region,
+                cw,
+                step,
+                cancelled,
+            );
+        }
+        // Отступ от грубой области: bbox должен захватывать берега, а не
+        // обрезать озеро. На повторной попытке отступ растёт.
+        let margin = (w.max(h) / 2).clamp(8, 64) as i32;
+        x0 = (x0 - margin).max(0);
+        y0 = (y0 - margin).max(0);
+        x1 = (x1 + margin).min(size);
+        y1 = (y1 + margin).min(size);
+        let w = (x1 - x0) as usize;
+        let h = (y1 - y0) as usize;
+
+        let Some(filled) = priority_flood_bbox(field, queue, x0, y0, x1, y1, cancelled) else {
+            return false;
+        };
+        if seed_x < x0 || seed_y < y0 || seed_x >= x1 || seed_y >= y1 {
+            return true;
+        }
+        let local_seed = (seed_y - y0) as usize * w + (seed_x - x0) as usize;
+        let level = filled[local_seed].min(coarse_level);
+        if level <= SEA_LEVEL as u16 {
+            return true;
+        }
+
+        // Компонента воды от самого низкого тайла до контура `height < level`.
+        let mut mask = vec![false; w * h];
+        let mut queue_water = VecDeque::new();
+        let seed_index = seed_y as usize * size as usize + seed_x as usize;
+        if field.data()[seed_index] >= level || water[seed_index].is_water() {
+            return true;
+        }
+        mask[local_seed] = true;
+        queue_water.push_back((seed_x, seed_y));
+        let mut touches_border = false;
+        let mut component_tiles = 1_usize;
+        let mut too_big = false;
+        let mut steps = 0_u32;
+        'water: while let Some((x, y)) = queue_water.pop_front() {
+            steps += 1;
+            if steps.is_multiple_of(65_536) && cancelled() {
+                return false;
+            }
+            if x == x0 || y == y0 || x + 1 == x1 || y + 1 == y1 {
+                touches_border = true;
+            }
+            for (dx, dy) in NEIGHBORS_8 {
+                let nx = x + dx;
+                let ny = y + dy;
+                if nx < x0 || ny < y0 || nx >= x1 || ny >= y1 {
+                    continue;
+                }
+                let local = (ny - y0) as usize * w + (nx - x0) as usize;
+                if mask[local] {
+                    continue;
+                }
+                let ni = ny as usize * size as usize + nx as usize;
+                if water[ni].is_water() || field.data()[ni] >= level {
+                    continue;
+                }
+                mask[local] = true;
+                queue_water.push_back((nx, ny));
+                component_tiles += 1;
+                if component_tiles > max_area {
+                    too_big = true;
+                    break 'water;
+                }
+            }
+        }
+
+        // Точный бассейн оказался неправдоподобно большим (например, уровень
+        // перелива заливает целую низменность). Для такого редкого случая
+        // откатываемся к ограниченной грубой областью — иначе одна ошибка
+        // съедает полкарты.
+        if too_big || component_tiles > max_area {
+            return fill_lake_bounded(
+                field,
+                water,
+                size,
+                seed_x,
+                seed_y,
+                level.min(coarse_level),
+                region_id,
+                lake_region,
+                cw,
+                step,
+                cancelled,
+            );
+        }
+
+        // Вода упёрлась в край bbox — значит, берег могли обрезать.
+        // Расширяем область и повторяем точный flood.
+        if touches_border && attempt < 3 {
+            let grow = (w.max(h) / 2).clamp(16, 128) as i32;
+            x0 = (x0 - grow).max(0);
+            y0 = (y0 - grow).max(0);
+            x1 = (x1 + grow).min(size);
+            y1 = (y1 + grow).min(size);
+            continue;
+        }
+
+        for local in 0..w * h {
+            if !mask[local] {
+                continue;
+            }
+            let x = x0 + (local % w) as i32;
+            let y = y0 + (local / w) as i32;
+            let index = y as usize * size as usize + x as usize;
+            if water[index].is_water() {
+                continue;
+            }
+            water[index] = WaterKind::Lake;
+            field.set_index(index, level);
+        }
+        return true;
+    }
+    true
+}
+
+/// Priority-flood на полной сетке внутри bbox: возвращает поверхность
+/// заполнения депрессий (`filled`) для каждой клетки bbox.
+fn priority_flood_bbox(
+    field: &HeightField,
+    queue: &mut HeightQueue,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+    cancelled: &dyn Fn() -> bool,
+) -> Option<Vec<u16>> {
+    let w = (x1 - x0) as usize;
+    let h = (y1 - y0) as usize;
+    let tiles = w * h;
+    let mut filled = vec![0_u16; tiles];
+    let mut visited = vec![false; tiles];
+    queue.clear();
+    for x in x0..x1 {
+        push_bbox_seed(queue, field, x, y0, x0, y0, w, &mut filled, &mut visited);
+        push_bbox_seed(
+            queue,
+            field,
+            x,
+            y1 - 1,
+            x0,
+            y0,
+            w,
+            &mut filled,
+            &mut visited,
+        );
+    }
+    for y in y0..y1 {
+        push_bbox_seed(queue, field, x0, y, x0, y0, w, &mut filled, &mut visited);
+        push_bbox_seed(
+            queue,
+            field,
+            x1 - 1,
+            y,
+            x0,
+            y0,
+            w,
+            &mut filled,
+            &mut visited,
+        );
+    }
+    let mut steps = 0_u32;
+    while let Some(local) = queue.pop() {
+        steps += 1;
+        if steps.is_multiple_of(65_536) && cancelled() {
+            return None;
+        }
+        let local = local as usize;
+        let lx = (local % w) as i32 + x0;
+        let ly = (local / w) as i32 + y0;
+        let level = filled[local];
+        for (dx, dy) in NEIGHBORS_4 {
+            let nx = lx + dx;
+            let ny = ly + dy;
+            if nx < x0 || ny < y0 || nx >= x1 || ny >= y1 {
+                continue;
+            }
+            let ni = (ny - y0) as usize * w + (nx - x0) as usize;
+            if visited[ni] {
+                continue;
+            }
+            visited[ni] = true;
+            let height = field.get(nx, ny);
+            let level = height.max(level);
+            filled[ni] = level;
+            queue.push(level, ni as u32);
+        }
+    }
+    Some(filled)
+}
+
+fn push_bbox_seed(
+    queue: &mut HeightQueue,
+    field: &HeightField,
+    x: i32,
+    y: i32,
+    x0: i32,
+    y0: i32,
+    w: usize,
+    filled: &mut [u16],
+    visited: &mut [bool],
+) {
+    let local = (y - y0) as usize * w + (x - x0) as usize;
+    if visited[local] {
+        return;
+    }
+    visited[local] = true;
+    let height = field.get(x, y);
+    filled[local] = height;
+    queue.push(height, local as u32);
+}
+
+/// Ограниченная заливка озера по грубой области (+1 клетка буфера). Нужна
+/// только как аварийный откат, если точный бассейн вышел за `max_area`.
+fn fill_lake_bounded(
     field: &mut HeightField,
     water: &mut [WaterKind],
     size: i32,
@@ -416,7 +712,7 @@ fn flood_lake(
     step: i32,
     cancelled: &dyn Fn() -> bool,
 ) -> bool {
-    if sx < 0 || sy < 0 || sx >= size || sy >= size {
+    if sx < 0 || sy < 0 || sx >= size || sy >= size || level <= SEA_LEVEL as u16 {
         return true;
     }
     let width = size as usize;
@@ -424,9 +720,6 @@ fn flood_lake(
     if water[start].is_water() || field.data()[start] >= level {
         return true;
     }
-    // Маску грубой области расширяем на 1 клетку: берег рисуется по
-    // настоящему контуру высот, а не по границе 4×4-клеток, но вода всё
-    // равно не может уйти за пределы бассейна.
     let in_region = |nx: i32, ny: i32| {
         let cx = (nx / step) as i32;
         let cy = (ny / step) as i32;
@@ -592,14 +885,13 @@ struct RiverPoint {
 
 /// Строит реки: источники по накоплению и реальному уклону, непрерывное
 /// продолжение вниз по дереву стока, сглаживание пути и запись поверхности.
-#[allow(clippy::too_many_arguments)]
 fn build_rivers(
     field: &mut HeightField,
     water: &mut [WaterKind],
     filled: &[u16],
     parent: &[u32],
     accumulation: &[u32],
-    lake_level: &[u16],
+    lake_region: &[u32],
     cw: usize,
     step: i32,
     size: i32,
@@ -611,7 +903,7 @@ fn build_rivers(
     for index in 0..cw * cw {
         let downstream = parent[index];
         if downstream == u32::MAX
-            || lake_level[index] > 0
+            || lake_region[index] != 0
             || accumulation[index] < RIVER_MIN_ACCUM
         {
             continue;

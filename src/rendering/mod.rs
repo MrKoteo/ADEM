@@ -41,14 +41,14 @@ mod textures;
 pub(crate) use hologram::update_build_hologram;
 #[allow(unused_imports)]
 pub(crate) use sprites::{
-    EntitySpriteVisuals, OUTLINE_THICKNESS_PX, build_outline_image, dilate_mask,
+    EntitySpriteVisuals, GroundCull, OUTLINE_THICKNESS_PX, build_outline_image, dilate_mask,
     entity_sprite_size, item_counts_visible, outline_radius_texels, scan_alpha_bounds,
     update_entity_sprite_visuals, update_entity_sprites, update_item_count_labels,
     update_item_entity_sprites, update_selection_outlines,
 };
 #[allow(unused_imports)]
 pub(crate) use terrain::{
-    MAX_BLOCK_TILES, BlockPos, LodTransition, MAX_LOD, RenderMetrics, TARGET_CELL_PX,
+    BlockPos, LodTransition, MAX_LOD, RenderMetrics, TARGET_CELL_PX,
     TerrainRender, block_tiles_for_lod, build_block_mesh, decor_visible_at, dominant_atlas_index,
     ensure_ground_material, lod_for_scale, lod_transition_for, render_world, tile_atlas_index,
 };

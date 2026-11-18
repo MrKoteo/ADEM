@@ -96,7 +96,15 @@ pub fn load_game(bytes: &[u8]) -> Result<SavedGame, SaveError> {
         // Контейнер существует только у тайла станции и по размеру совпадает
         // с ёмкостью её вида; разъехавшиеся слои — повреждение.
         validate_container_layer(&objects, &containers)?;
-        chunks.push(crate::simulation::chunk::Chunk { terrain, heights, resources, objects, items, crops, containers });
+        chunks.push(crate::simulation::chunk::Chunk {
+            terrain,
+            heights,
+            resources: crate::simulation::chunk::SparseLayer::from_map(resources),
+            objects: crate::simulation::chunk::SparseLayer::from_map(objects),
+            items: crate::simulation::chunk::SparseLayer::from_map(items),
+            crops: crate::simulation::chunk::SparseLayer::from_map(crops),
+            containers: crate::simulation::chunk::SparseLayer::from_map(containers),
+        });
     }
 
     // Существа.

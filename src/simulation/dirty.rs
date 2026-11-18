@@ -62,15 +62,23 @@ impl DirtyTiles {
     /// в очереди. Нужно для разрежения пересборок на дальних LOD: рендер
     /// обрабатывает порцию за окно, а не весь накопленный список разом.
     /// Порядок не важен — тайлы группируются по блокам при перестройке.
+    #[allow(dead_code)] // удобная обёртка для тестов; рендер пишет в свой буфер
     pub fn take_terrain_batch(&mut self, max: usize) -> Vec<TilePos> {
+        let mut batch = Vec::new();
+        self.take_terrain_batch_into(max, &mut batch);
+        batch
+    }
+    /// Рендер держит переданный буфер между кадрами и не аллоцирует вектор на каждое окно пересборки.
+    pub fn take_terrain_batch_into(&mut self, max: usize, out: &mut Vec<TilePos>) {
+        out.clear();
         let take = self.terrain.len().min(max);
         if take == 0 {
-            return Vec::new();
+            return;
         }
-        let batch: Vec<TilePos> = self.terrain.drain(..take).collect();
-        for pos in &batch {
+        out.extend_from_slice(&self.terrain[..take]);
+        self.terrain.drain(..take);
+        for pos in out.iter() {
             self.terrain_seen.remove(pos);
         }
-        batch
     }
 }

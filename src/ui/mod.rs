@@ -9,6 +9,7 @@ pub mod hotbar;
 pub mod icons;
 pub mod inspector;
 pub mod inventory;
+pub mod loading;
 pub mod menu_bg;
 pub mod menus;
 pub mod settings_window;
@@ -105,6 +106,7 @@ impl Plugin for UiPlugin {
             .add_plugins(construction::ConstructionPlugin)
             .add_plugins(stations::StationPlugin)
             .add_plugins(inspector::InspectorPlugin)
+            .add_plugins(loading::LoadingPlugin)
             .add_plugins(tooltip::TooltipPlugin);
     }
 }
@@ -113,4 +115,3 @@ impl Plugin for UiPlugin {
 fn load_font(mut commands: Commands, assets: Res<AssetServer>) {
     commands.insert_resource(UiFont(assets.load("fonts/FiraSans-Medium.ttf")));
 }
-

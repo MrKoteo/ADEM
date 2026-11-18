@@ -241,7 +241,8 @@ pub(crate) fn elevation_at(x: i32, y: i32, size: i32, seed: u64) -> f32 {
 
 /// Заполняет поле базовыми высотами. Всё ниже уровня моря сразу получает
 /// `SEA_LEVEL` (0), а `sea_depth` запоминает глубину по исходной высоте.
-/// Проверка отмены — раз в строку.
+/// Проверка отмены — раз в строку. `progress` получает долю пройденных
+/// строк (самый долгий проход генерации — планка не должна стоять на нуле).
 pub(crate) fn fill_base_heights(
     field: &mut HeightField,
     sea_depth: &mut [u8],
@@ -249,11 +250,15 @@ pub(crate) fn fill_base_heights(
     seed: u64,
     archetype: MapArchetype,
     cancelled: &dyn Fn() -> bool,
+    progress: &dyn Fn(f32),
 ) -> bool {
     let width = size as usize;
     for y in 0..size {
         if cancelled() {
             return false;
+        }
+        if y % 16 == 0 {
+            progress(y as f32 / size as f32);
         }
         let row = y as usize * width;
         for x in 0..size {
@@ -272,6 +277,7 @@ pub(crate) fn fill_base_heights(
             }
         }
     }
+    progress(1.0);
     true
 }
 

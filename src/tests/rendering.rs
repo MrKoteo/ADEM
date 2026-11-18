@@ -60,17 +60,20 @@ fn decor_is_lod_zero_only() {
 }
 
 /// Размер terrain-меша зависит от LOD: L0 — по чанкам 16×16 (правка тайла
-/// не пересобирает весь блок 64×64), L1 — 32×32, L2+ — 64×64. Шаг делит
-/// все размеры мира (кратные 16), поэтому блоки всегда ложатся на сетку.
+/// не пересобирает весь блок), L1 — 32×32, дальше 16·2^LOD — блок всегда
+/// несёт 16×16 ячеек. Шаг делит все размеры мира (кратные 16), поэтому блоки
+/// всегда ложатся на сетку.
 #[test]
 fn terrain_block_size_follows_lod() {
-    use crate::rendering::{MAX_BLOCK_TILES, block_tiles_for_lod, MAX_LOD};
-
+    use crate::rendering::{block_tiles_for_lod, MAX_LOD};
     assert_eq!(block_tiles_for_lod(0), 16);
     assert_eq!(block_tiles_for_lod(1), 32);
+    assert_eq!(block_tiles_for_lod(2), 64);
     for lod in 2..=MAX_LOD {
-        assert_eq!(block_tiles_for_lod(lod), MAX_BLOCK_TILES);
-        assert_eq!(MAX_BLOCK_TILES % block_tiles_for_lod(lod), 0);
+        let step = block_tiles_for_lod(lod);
+        assert_eq!(step, 16 << lod);
+        // Блок — всегда 16×16 ячеек LOD: меш не растёт с отдалением.
+        assert_eq!(step >> lod, 16);
     }
 }
 
@@ -368,4 +371,58 @@ fn outline_radius_matches_texel_density() {
     assert_eq!(wolf, (OUTLINE_THICKNESS_PX * 4.0).round() as u32);
     assert!(human > wolf, "более плотная текстура — больший радиус");
     assert_eq!(outline_radius_texels(1, 1000.0), 1, "минимум один тексель");
+}
+
+/// Грубый отсекатель спрайтов обязан быть консервативным: всё, что камера
+/// действительно видит (точка на любой высоте рельефа внутри экранного
+/// прямоугольника в камерных осях), не должно отсекаться — иначе спрайты
+/// исчезали бы у края экрана.
+#[test]
+fn ground_cull_keeps_every_visible_point() {
+    use bevy::camera::OrthographicProjection;
+    use bevy::math::{Vec2, Vec3};
+    use bevy::prelude::Transform;
+    use crate::rendering::GroundCull;
+
+    // Камера как в игре: изометрия, наклон 30°, смотрит на карту с большой
+    // высоты; масштаб и viewport — как в окне 1280×720.
+    let target = Vec3::new(1000.0, 1000.0, 50.0);
+    let distance = 4096.0 * crate::rendering::isometric::WORLD_TILE_SIZE * 2.0;
+    let horizontal = (std::f32::consts::PI / 6.0).cos();
+    let yaw = 5.0 * std::f32::consts::FRAC_PI_4;
+    let offset = Vec3::new(
+        yaw.cos() * horizontal,
+        yaw.sin() * horizontal,
+        (std::f32::consts::PI / 6.0).sin(),
+    ) * distance;
+    let transform = Transform::from_translation(target + offset).looking_at(target, Vec3::Z);
+    let ortho = OrthographicProjection {
+        scale: 3.0,
+        ..OrthographicProjection::default_3d()
+    };
+    let viewport = Vec2::new(1280.0, 720.0);
+    let cull = GroundCull::new(&transform, &ortho, viewport, 32.0);
+
+    let right = transform.rotation * Vec3::X;
+    let up = transform.rotation * Vec3::Y;
+    let half = viewport * (ortho.scale * 0.5);
+    let mut checked = 0;
+    for gx in -200_i32..=200 {
+        for gy in -200_i32..=200 {
+            let ground = Vec2::new(target.x + gx as f32 * 20.0, target.y + gy as f32 * 20.0);
+            // Разные высоты рельефа: 0..255 уровней.
+            let height = (gx * 7 + gy * 13).rem_euclid(256) as f32;
+            let point = Vec3::new(ground.x, ground.y, height);
+            let delta = point - transform.translation;
+            let on_screen = right.dot(delta).abs() <= half.x && up.dot(delta).abs() <= half.y;
+            if on_screen {
+                checked += 1;
+                assert!(
+                    cull.contains(ground),
+                    "точка ({gx},{gy}) видна камере, но отсечена"
+                );
+            }
+        }
+    }
+    assert!(checked > 100, "проверено слишком мало видимых точек: {checked}");
 }

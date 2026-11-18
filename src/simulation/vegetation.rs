@@ -15,7 +15,7 @@
 //! вид задачи, координаты) — поток не зависит от порядка прочих событий;
 //! обходы при посеве идут row-major, порядок регистрации задач стабилен.
 
-use super::chunk::CHUNK_TILES;
+use super::chunk::{CHUNK_SIZE, CHUNK_TILES, Chunk};
 use super::dirty::DirtyTiles;
 use super::objects::{ObjectKind, WorldObject};
 use super::rng::SplitMix64;
@@ -24,16 +24,16 @@ use super::tile::TileType;
 use super::world::{ChunkPos, TilePos, World, split_tile, tile_pos};
 
 /// Вероятность за такт, что тайл травы займёт соседний тайл земли.
-pub const GRASS_SPREAD_P: f32 = 0.0007;
+pub const GRASS_SPREAD_P: f32 = 0.0001;
 
 /// Вероятность за такт, что один тайл лесной травы вырастит куст.
-pub const BUSH_GROW_P: f32 = 0.0001;
+pub const BUSH_GROW_P: f32 = 0.00002;
 
 /// Максимум кустов в одном чанке: после предела цепочка чанка гаснет.
 pub const BUSH_CAP_PER_CHUNK: u32 = 16;
 
 /// Вероятность за такт, что тайл воды подточит одного из эродируемых соседей.
-pub const EROSION_P: f32 = 0.0001;
+pub const EROSION_P: f32 = 0.00008;
 
 /// Теги видов задач для посева RNG событий (стабильны, часть детерминизма).
 const TAG_GRASS: u8 = 1;
@@ -99,30 +99,119 @@ fn interval_ticks(rng: &mut SplitMix64, p: f32) -> u64 {
 /// не получают.
 #[allow(dead_code)] // синхронная обёртка для тестов; игра идёт через cancellable
 pub fn seed_all(world: &World, sched: &mut Scheduler, tick: u64) {
-    let _ = seed_all_cancellable(world, sched, tick, &|| false);
+    let _ = seed_all_cancellable(world, sched, tick, &|| false, &|_| {});
 }
 
 /// Как `seed_all`, но с проверкой отмены: посев на огромной карте — такой
 /// же долгий проход, как и генерация, поэтому его тоже можно прервать при
 /// смене параметров мира в UI. `false` — работа прервана, планировщик
 /// содержит частично засеянные цепочки и использовать его нельзя.
+/// `progress` получает долю 0..=1 (для прогресс-бара загрузки).
 pub fn seed_all_cancellable(
     world: &World,
     sched: &mut Scheduler,
     tick: u64,
     cancelled: &dyn Fn() -> bool,
+    progress: &dyn Fn(f32),
 ) -> bool {
+    // Посев цепочек по тайлам — ~85% времени этого прохода, кусты по
+    // чанкам — остальное.
+    const BUSH_SHARE: f32 = 0.15;
     sched.clear_world_tasks();
     let seed = world.seed;
     let n = world.size.tiles() as i32;
+    let chunk_side = CHUNK_SIZE as i32;
+    let chunks = world.chunks_per_side as usize;
+    // Чанки текущей строки чанков: обход остаётся построчным по миру
+    // (порядок постановки задач — часть детерминизма), но вид тайла и
+    // соседей читается прямо из слоёв, без поиска чанка на каждый тайл
+    // (на 4096² это десятки миллионов поисков ради посева).
+    let mut row_chunks: Vec<&Chunk> = Vec::with_capacity(chunks);
+    progress(0.0);
     for y in 0..n {
         if cancelled() {
             return false;
         }
+        if y % 32 == 0 {
+            progress((1.0 - BUSH_SHARE) * y as f32 / n as f32);
+        }
+        let chunk_y = y.div_euclid(chunk_side);
+        let local_y = y.rem_euclid(chunk_side) as usize;
+        if local_y == 0 {
+            row_chunks.clear();
+            for cx in 0..chunks {
+                row_chunks.push(world.chunk(ChunkPos {
+                    x: cx as u32,
+                    y: chunk_y as u32,
+                }));
+            }
+        }
         for x in 0..n {
-            let pos = TilePos { x, y };
-            schedule_grass_spread(world, sched, seed, tick, pos);
-            schedule_water_erosion(world, sched, seed, tick, pos);
+            let chunk_x = x.div_euclid(chunk_side) as usize;
+            let local_x = x.rem_euclid(chunk_side) as usize;
+            let chunk = row_chunks[chunk_x];
+            let tile_row = local_y * CHUNK_SIZE;
+            let local = (tile_row + local_x) as u8;
+            let kind = chunk.terrain.get(local as usize);
+            let want_grass = kind == TileType::Grass;
+            let want_erosion = kind.is_water();
+            if !want_grass && !want_erosion {
+                continue;
+            }
+            let mut dirt_neighbor = false;
+            let mut erodible_neighbor = false;
+            // Соседи в порядке NEIGHBORS: (0,-1), (1,0), (0,1), (-1,0).
+            // На границе чанка читаем соседний чанк напрямую, за краем мира соседа нет (как и в `neighbors`).
+            if y > 0 {
+                let neighbor = if local_y > 0 {
+                    chunk.terrain.get(local as usize - CHUNK_SIZE)
+                } else {
+                    world.terrain_kind(TilePos { x, y: y - 1 })
+                };
+                dirt_neighbor |= neighbor == TileType::Dirt;
+                erodible_neighbor |= erodible(neighbor);
+            }
+            if x + 1 < n {
+                let neighbor = if local_x + 1 < CHUNK_SIZE {
+                    chunk.terrain.get(local as usize + 1)
+                } else {
+                    // Правый сосед — первый столбец следующего чанка строки.
+                    row_chunks[chunk_x + 1].terrain.get(tile_row)
+                };
+                dirt_neighbor |= neighbor == TileType::Dirt;
+                erodible_neighbor |= erodible(neighbor);
+            }
+            if y + 1 < n {
+                let neighbor = if local_y + 1 < CHUNK_SIZE {
+                    chunk.terrain.get(local as usize + CHUNK_SIZE)
+                } else {
+                    world.terrain_kind(TilePos { x, y: y + 1 })
+                };
+                dirt_neighbor |= neighbor == TileType::Dirt;
+                erodible_neighbor |= erodible(neighbor);
+            }
+            if x > 0 {
+                let neighbor = if local_x > 0 {
+                    chunk.terrain.get(local as usize - 1)
+                } else {
+                    // Левый сосед — последний столбец предыдущего чанка.
+                    row_chunks[chunk_x - 1]
+                        .terrain
+                        .get(tile_row + CHUNK_SIZE - 1)
+                };
+                dirt_neighbor |= neighbor == TileType::Dirt;
+                erodible_neighbor |= erodible(neighbor);
+            }
+            let chunk_pos = ChunkPos {
+                x: chunk_x as u32,
+                y: chunk_y as u32,
+            };
+            if want_grass && dirt_neighbor {
+                schedule_grass_spread_known(sched, seed, tick, chunk_pos, local);
+            }
+            if want_erosion && erodible_neighbor {
+                schedule_water_erosion_known(sched, seed, tick, chunk_pos, local);
+            }
         }
     }
     // Цепочки роста кустов — по чанкам: и кандидаты, и предел считаются на чанк.
@@ -130,10 +219,14 @@ pub fn seed_all_cancellable(
         if cancelled() {
             return false;
         }
+        progress(
+            1.0 - BUSH_SHARE + BUSH_SHARE * cy as f32 / world.chunks_per_side.max(1) as f32,
+        );
         for cx in 0..world.chunks_per_side {
             schedule_bush_growth(world, sched, seed, tick, ChunkPos { x: cx, y: cy });
         }
     }
+    progress(1.0);
     true
 }
 
@@ -148,8 +241,7 @@ pub fn after_tile_changed(world: &World, sched: &mut Scheduler, tick: u64, pos: 
     let seed = world.seed;
     let kind = world.terrain_kind(pos);
 
-    // Цепочки самого тайла: трава и вода действуют сами, чанк леса
-    // растит кусты.
+    // Цепочки самого тайла: трава и вода действуют сами, чанк леса растит кусты.
     schedule_grass_spread(world, sched, seed, tick, pos);
     schedule_water_erosion(world, sched, seed, tick, pos);
     if kind == TileType::ForestGrass {
@@ -251,9 +343,7 @@ fn bush_growth(
     }
     let mut candidates: Vec<u8> = Vec::new();
     for idx in 0..CHUNK_TILES {
-        if chunk_ref.terrain.get(idx) == TileType::ForestGrass
-            && !chunk_ref.objects.contains_key(&(idx as u8))
-        {
+        if chunk_ref.terrain.get(idx) == TileType::ForestGrass && !chunk_ref.objects.contains_key(&(idx as u8)) {
             candidates.push(idx as u8);
         }
     }
@@ -303,7 +393,14 @@ fn water_erosion(
 
 /// Планирует следующее событие цепочки травы, если тайл — трава и рядом
 /// есть земля. Иначе цепочка не возобновляется.
-fn schedule_grass_spread(world: &World, sched: &mut Scheduler, seed: u64, tick: u64, pos: TilePos) {
+/// `pub(crate)` — эталон для теста эквивалентности оптимизированного посева.
+pub(crate) fn schedule_grass_spread(
+    world: &World,
+    sched: &mut Scheduler,
+    seed: u64,
+    tick: u64,
+    pos: TilePos,
+) {
     if world.terrain_kind(pos) != TileType::Grass {
         return;
     }
@@ -313,14 +410,32 @@ fn schedule_grass_spread(world: &World, sched: &mut Scheduler, seed: u64, tick: 
         return;
     }
     let (chunk, local) = split_tile(pos);
+    schedule_grass_spread_known(sched, seed, tick, chunk, local);
+}
+
+/// Планирует событие травы, когда вид тайла и наличие земли-соседа уже
+/// известны (массовый посев идёт по чанкам и не ищет чанк на каждый тайл).
+fn schedule_grass_spread_known(
+    sched: &mut Scheduler,
+    seed: u64,
+    tick: u64,
+    chunk: ChunkPos,
+    local: u8,
+) {
     let mut rng = event_rng(seed, tick, TAG_GRASS, chunk, local);
     let delta = interval_ticks(&mut rng, GRASS_SPREAD_P);
     sched.schedule_at(tick + delta, TaskKind::GrassSpread { chunk, local_index: local });
 }
 
 /// Планирует следующее событие цепочки воды, если тайл — вода и рядом
-/// есть эродируемый сосед.
-fn schedule_water_erosion(world: &World, sched: &mut Scheduler, seed: u64, tick: u64, pos: TilePos) {
+/// есть эродируемый сосед. `pub(crate)` — эталон для теста посева.
+pub(crate) fn schedule_water_erosion(
+    world: &World,
+    sched: &mut Scheduler,
+    seed: u64,
+    tick: u64,
+    pos: TilePos,
+) {
     if !world.terrain_kind(pos).is_water() {
         return;
     }
@@ -330,6 +445,18 @@ fn schedule_water_erosion(world: &World, sched: &mut Scheduler, seed: u64, tick:
         return;
     }
     let (chunk, local) = split_tile(pos);
+    schedule_water_erosion_known(sched, seed, tick, chunk, local);
+}
+
+/// Версия для массового посева: вид тайла и наличие эродируемого соседа
+/// уже прочитаны из слоёв чанка.
+fn schedule_water_erosion_known(
+    sched: &mut Scheduler,
+    seed: u64,
+    tick: u64,
+    chunk: ChunkPos,
+    local: u8,
+) {
     let mut rng = event_rng(seed, tick, TAG_EROSION, chunk, local);
     let delta = interval_ticks(&mut rng, EROSION_P);
     sched.schedule_at(tick + delta, TaskKind::WaterErosion { chunk, local_index: local });
@@ -338,7 +465,14 @@ fn schedule_water_erosion(world: &World, sched: &mut Scheduler, seed: u64, tick:
 /// Планирует следующее событие роста кустов в чанке, если предел не
 /// достигнут и есть кандидаты. Суммарная вероятность чанка = вероятность
 /// одного тайла × число кандидатов (приближение Пуассона для малых p).
-fn schedule_bush_growth(world: &World, sched: &mut Scheduler, seed: u64, tick: u64, chunk: ChunkPos) {
+/// `pub(crate)` — эталон для теста посева.
+pub(crate) fn schedule_bush_growth(
+    world: &World,
+    sched: &mut Scheduler,
+    seed: u64,
+    tick: u64,
+    chunk: ChunkPos,
+) {
     let chunk_ref = world.chunk(chunk);
     let mut bushes = 0_u32;
     let mut candidates = 0_usize;
