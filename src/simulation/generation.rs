@@ -25,7 +25,7 @@ use super::chunk::{ResourceDeposit, TerrainTiles, CHUNK_SIZE, CHUNK_TILES};
 use super::climate::CLIMATE_CELL_TILES;
 use super::entities::EntityKind;
 use super::heightmap::{Heightmap, HEIGHT_MAX};
-use super::objects::WorldObject;
+use super::objects::{CHERRY_BUSH_CHANCE, WorldObject};
 use super::tile::{ResourceKind, TileType};
 use super::world::{TilePos, World, WorldPos, WorldSize};
 
@@ -510,7 +510,11 @@ fn place_content(
                                     rng.random_range(4..=10),
                                 ))
                             } else if r < 0.25 {
-                                Some(WorldObject::bush())
+                                Some(if rng.random::<f32>() < CHERRY_BUSH_CHANCE {
+                                    WorldObject::cherry_bush_with_fruit(rng.random_range(6..=15))
+                                } else {
+                                    WorldObject::bush()
+                                })
                             } else if r < 0.253 {
                                 Some(WorldObject::rock(5 + rng.random_range(0..10)))
                             } else {
@@ -522,7 +526,12 @@ fn place_content(
                         }
                         TileType::Grass if height < TREE_LINE_SUB => {
                             if rng.random::<f32>() < 0.03 {
-                                chunk.objects.insert(idx as u8, WorldObject::bush());
+                                let object = if rng.random::<f32>() < CHERRY_BUSH_CHANCE {
+                                    WorldObject::cherry_bush_with_fruit(rng.random_range(6..=15))
+                                } else {
+                                    WorldObject::bush()
+                                };
+                                chunk.objects.insert(idx as u8, object);
                             }
                         }
                         TileType::Stone | TileType::Mountain | TileType::Gravel

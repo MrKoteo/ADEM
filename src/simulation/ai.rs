@@ -17,6 +17,7 @@ use super::hunger::EAT_COOLDOWN_TICKS;
 use super::items::MISC_SLOTS;
 use super::objects::ObjectKind;
 use super::rng::{SplitMix64, mix_seed};
+use super::tile::TileType;
 use super::time::{self, TICKS_PER_SEC};
 use super::world::{World, WorldPos};
 
@@ -84,10 +85,9 @@ impl World {
 
         for &id in &ids {
             // В воде ИИ молчит: работает паника/выход на сушу общего FSM.
-            let swimming = self
-                .entities
-                .get(id)
-                .is_some_and(|e| super::actions::terrain_is_water(self, e.pos));
+            let swimming = self.entities.get(id).is_some_and(|e| {
+                super::actions::terrain_at(self, e.pos).is_some_and(TileType::is_water)
+            });
             if swimming {
                 continue;
             }
@@ -122,9 +122,7 @@ impl World {
                     .and_then(|e| e.mind.as_ref())
                     .and_then(|m| m.goal)
                     .is_some_and(|g| matches!(g, HumanGoal::Campfire(_)));
-                if !have_fire_goal
-                    && let Some(fire) = self.known_campfire(id)
-                {
+                if !have_fire_goal && let Some(fire) = self.known_campfire(id) {
                     self.set_goal(id, Some(HumanGoal::Campfire(fire)));
                 }
             } else {
@@ -207,24 +205,18 @@ impl World {
                 .entities
                 .get(id)
                 .is_some_and(|e| e.hunger.value() < STOCKPILE_THRESHOLD);
-            if not_full
-                && let Some(goal) = self.known_food_goal(id)
-            {
+            if not_full && let Some(goal) = self.known_food_goal(id) {
                 self.set_goal(id, Some(goal));
                 return;
             }
         }
         // Сбор палок с куста: задел под крафт и строительство.
-        if roll < 0.5
-            && let Some(bush) = self.nearest_bush(id)
-        {
+        if roll < 0.5 && let Some(bush) = self.nearest_bush(id) {
             self.set_goal(id, Some(HumanGoal::Gather(bush)));
             return;
         }
         // Осмотреться: повернуться в случайную сторону (живость покоя).
-        if roll < 0.7
-            && let Some(entity) = self.entities.get_mut(id)
-        {
+        if roll < 0.7 && let Some(entity) = self.entities.get_mut(id) {
             entity.facing = if rng.next_f32() < 0.5 {
                 super::entities::Facing::Left
             } else {
@@ -339,10 +331,10 @@ impl World {
             return;
         };
         if entity.pos.dist(center) <= super::actions::INTERACT_REACH {
-            // На месте: сначала яблоня, затем культура (порядок не важен —
+            // На месте: сначала плоды, затем культура (порядок не важен —
             // на тайле есть что-то одно). Успех или пусто — цель исполнена,
             // голод сам решит, нужна ли следующая.
-            let _ = super::actions::harvest_apple(self, id, tile);
+            let _ = super::actions::harvest_fruit(self, id, tile);
             let _ = super::actions::harvest_crop(self, id, tile);
             // Собранная/исчезнувшая еда из памяти тоже уходит.
             if let Some(m) = self.entities.get_mut(id).and_then(|e| e.mind.as_mut())
@@ -369,7 +361,7 @@ impl World {
         if entity.pos.dist(center) <= super::actions::INTERACT_REACH {
             let is_bush = self
                 .object_at(tile)
-                .is_some_and(|o| o.kind == ObjectKind::Bush);
+                .is_some_and(|o| o.kind.is_bush());
             if is_bush {
                 let _ = super::actions::interact(self, id, tile, tick);
             }
@@ -515,10 +507,10 @@ impl World {
         self.find_hunt_goal(id)
     }
 
-    /// Еда ли ещё на тайле: яблоня с плодами или зрелая культура.
+    /// Еда ли ещё на тайле: плоды (яблоня, вишнёвый куст) или зрелая культура.
     fn food_still_there(&self, tile: super::world::TilePos) -> bool {
         match self.object_at(tile) {
-            Some(obj) => matches!(obj.kind, ObjectKind::AppleTree) && obj.charge > 0,
+            Some(obj) => obj.fruit_yield().is_some(),
             None => self.crop_at(tile).is_some_and(|crop| crop.is_mature()),
         }
     }
@@ -573,8 +565,8 @@ impl World {
 
     /// Цель-еда по памяти: см. `known_food_goal`. Старый скан-выбор
     /// заменён памятью с малым сканом окрестностей.
-    /// Ближайший тайл с готовой едой: яблоня с плодами или зрелая культура.
-    /// Скан по чанкам квадрата радиуса `FOOD_SEARCH_TILES`.
+    /// Ближайший тайл с готовой едой: плоды (яблоня, вишнёвый куст) или
+    /// зрелая культура. Скан по чанкам квадрата радиуса `FOOD_SEARCH_TILES`.
     fn nearest_food_tile(&self, id: u64) -> Option<super::world::TilePos> {
         let origin = self.entities.get(id)?.pos;
         let radius = FOOD_SEARCH_TILES as i32;
@@ -591,10 +583,7 @@ impl World {
             for tx in x0..=x1 {
                 let pos = super::world::TilePos { x: tx, y: ty };
                 let food = match self.object_at(pos) {
-                    Some(obj) => {
-                        // Яблоня: плоды есть, пока заряд не нулевой.
-                        matches!(obj.kind, ObjectKind::AppleTree) && obj.charge > 0
-                    }
+                    Some(obj) => obj.fruit_yield().is_some(),
                     None => self.crop_at(pos).is_some_and(|crop| crop.is_mature()),
                 };
                 if !food {
@@ -602,9 +591,7 @@ impl World {
                 }
                 // Еда за озером по прямой не рассматривается: человек в
                 // брожении туда не идёт (узкая река — можно).
-                if path_water_crossings(self, origin, WorldPos::of_tile_center(pos))
-                    > MAX_WATER_CROSSINGS
-                {
+                if path_water_crossings(self, origin, WorldPos::of_tile_center(pos)) > MAX_WATER_CROSSINGS {
                     continue;
                 }
                 let dist = origin.dist(WorldPos::of_tile_center(pos));
@@ -682,14 +669,12 @@ impl World {
                 let pos = super::world::TilePos { x: tx, y: ty };
                 if !self
                     .object_at(pos)
-                    .is_some_and(|obj| obj.kind == ObjectKind::Bush)
+                    .is_some_and(|obj| obj.kind.is_bush())
                 {
                     continue;
                 }
                 // Куст за озером по прямой не рассматривается.
-                if path_water_crossings(self, origin, WorldPos::of_tile_center(pos))
-                    > MAX_WATER_CROSSINGS
-                {
+                if path_water_crossings(self, origin, WorldPos::of_tile_center(pos)) > MAX_WATER_CROSSINGS {
                     continue;
                 }
                 let dist = origin.dist(WorldPos::of_tile_center(pos));

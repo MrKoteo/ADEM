@@ -96,15 +96,12 @@ pub fn terrain_at(world: &World, pos: WorldPos) -> Option<TileType> {
     Some(world.terrain_kind(TilePos { x: tx, y: ty }))
 }
 
-/// Проходим ли тайл для движения. Глубокая вода и океан не проходимы —
-/// ни с суши, ни вплавь с мелководья. Исключение — существо, уже стоящее
-/// в глубине («бог» перетащило его в океан): движение позволяет выбраться
-/// на берег. Вне мира — суша.
-fn passable(world: &World, pos: WorldPos, on_deep_water: bool) -> bool {
-    !matches!(
-        terrain_at(world, pos),
-        Some(TileType::DeepWater | TileType::Ocean | TileType::Ice) if !on_deep_water
-    )
+/// Проходим ли тайл для движения. Правило — в `movement::blocks_movement`
+/// (вода проходима вплавь, лёд — нет). Исключение — существо, уже стоящее
+/// на непроходимом тайле («бог» перетащило его туда): движение позволяет
+/// с него выбраться. Вне мира — суша.
+fn passable(world: &World, from: Option<TileType>, pos: WorldPos) -> bool {
+    movement::can_enter(from, terrain_at(world, pos))
 }
 
 /// Шаг движения существа за один тик по направлению ввода контроллера.
@@ -112,9 +109,9 @@ fn passable(world: &World, pos: WorldPos, on_deep_water: bool) -> bool {
 /// чтобы диагональ не была быстрее. Работает и для неразумных (захваченный
 /// волк идёт на своей скорости вида).
 ///
-/// По осям движение проверяется отдельно: упираясь в глубокую воду по
-/// одной оси, существо скользит вдоль берега по другой. Скорость — по
-/// общим правилам мира (`simulation/movement.rs`).
+/// По осям движение проверяется отдельно: упираясь в непроходимый тайл
+/// (лёд) по одной оси, существо скользит вдоль него по другой. Скорость —
+/// по общим правилам мира (`simulation/movement.rs`).
 ///
 /// Контроллер ведёт и внешний вид существа: взгляд по горизонтальной оси
 /// ввода и состояния Walking/Standing (FSM захваченного не тикает — см.
@@ -160,11 +157,8 @@ pub fn step_direction(world: &mut World, actor: u64, dir: (f32, f32)) {
     entity.prev_pos = entity.pos;
 
     let max = world.size.tiles() as f32;
-    let on_deep = matches!(
-        terrain_at(world, pos),
-        Some(TileType::DeepWater | TileType::Ocean | TileType::Ice)
-    );
-    let speed = movement::effective_walk_speed(base_speed, terrain_at(world, pos));
+    let here = terrain_at(world, pos);
+    let speed = movement::effective_walk_speed(base_speed, here);
     let dx = dir.0 / len * speed;
     let dy = dir.1 / len * speed;
 
@@ -172,7 +166,7 @@ pub fn step_direction(world: &mut World, actor: u64, dir: (f32, f32)) {
         x: (pos.x + dx).clamp(0.0, max),
         y: pos.y,
     };
-    if passable(world, try_x, on_deep)
+    if passable(world, here, try_x)
         && let Some(entity) = world.entities.get_mut(actor)
     {
         entity.pos = try_x;
@@ -188,7 +182,7 @@ pub fn step_direction(world: &mut World, actor: u64, dir: (f32, f32)) {
         x: current_x,
         y: (pos.y + dy).clamp(0.0, max),
     };
-    if passable(world, try_y, on_deep)
+    if passable(world, here, try_y)
         && let Some(entity) = world.entities.get_mut(actor)
     {
         entity.pos = try_y;
@@ -202,16 +196,9 @@ pub fn step_direction(world: &mut World, actor: u64, dir: (f32, f32)) {
 /// захваченный волк тоже голодает. `moving` — двигалось ли существо.
 /// `false` — существо погибло от голода.
 pub fn tick_hunger(world: &mut World, actor: u64, moving: bool) -> bool {
-    let swimming = matches!(
-        pos_of(world, actor).and_then(|pos| terrain_at(world, pos)),
-        Some(
-            TileType::Water
-                | TileType::DeepWater
-                | TileType::Ocean
-                | TileType::Ice
-                | TileType::River,
-        )
-    );
+    let swimming = pos_of(world, actor)
+        .and_then(|pos| terrain_at(world, pos))
+        .is_some_and(TileType::is_water);
     let activity = if swimming {
         Activity::Swimming
     } else if moving {
@@ -376,32 +363,33 @@ fn plow(world: &mut World, actor: u64, pos: TilePos) -> bool {
     true
 }
 
-/// Сбор яблок с яблони (ПКМ). За одно действие дерево отдаёт одно яблоко,
-/// как валун — один камень. Последнее яблоко оставляет дерево пустым
-/// навсегда: `charge = 0` и текстура `apple_tree_empty`. `false` — не
-/// яблоня, нет плодов, далеко или в инвентаре нет места.
-pub fn harvest_apple(world: &mut World, actor: u64, pos: TilePos) -> bool {
+/// Сбор плодов с яблони или вишнёвого куста (ПКМ). За одно действие
+/// объект отдаёт один плод, как валун — один камень. Последний плод
+/// оставляет объект пустым навсегда: `charge = 0` и текстура
+/// `apple_tree_empty` / `cherry_bush_empty`. `false` — не плодовый объект,
+/// плодов нет, далеко или в инвентаре нет места.
+pub fn harvest_fruit(world: &mut World, actor: u64, pos: TilePos) -> bool {
     if !reachable(world, actor, pos) {
         return false;
     }
     let Some(obj) = world.object_at(pos).copied() else {
         return false;
     };
-    let Some(amount) = obj.apple_yield() else {
+    let Some((fruit, amount)) = obj.fruit_yield() else {
         return false;
     };
-    let fits = mind(world, actor).is_some_and(|m| m.inventory.can_fit(ItemKind::Apple, 1));
+    let fits = mind(world, actor).is_some_and(|m| m.inventory.can_fit(fruit, 1));
     if !fits {
         return false;
     }
     if let Some(m) = mind_mut(world, actor) {
-        m.inventory.add(ItemKind::Apple, 1);
+        m.inventory.add(fruit, 1);
     }
 
-    // Плодов на дереве на единицу меньше; пустая яблоня остаётся объектом.
-    let mut tree = obj;
-    tree.charge = amount - 1;
-    world.set_object(pos, Some(tree));
+    // Плодов на объекте на единицу меньше; пустой остаётся объектом.
+    let mut object = obj;
+    object.charge = amount - 1;
+    world.set_object(pos, Some(object));
     true
 }
 
@@ -429,18 +417,29 @@ fn harvest_object(world: &mut World, actor: u64, pos: TilePos, obj: WorldObject)
     let Some(item) = ItemKind::from_resource(resource) else {
         return false;
     };
-    let fits = mind(world, actor)
-        .is_some_and(|m| m.inventory.can_fit(item, u32::from(amount)));
+    // Вишнёвый куст при добыче теряет половину плодов: подобранное уходит
+    // в инвентарь вместе с палками (остальное пропадает).
+    let half_fruit = (obj.kind == ObjectKind::CherryBush)
+        .then_some(u32::from(obj.charge / 2))
+        .filter(|count| *count > 0);
+    let fits = mind(world, actor).is_some_and(|m| {
+        m.inventory.can_fit(item, u32::from(amount))
+            && half_fruit
+                .is_none_or(|count| m.inventory.can_fit(ItemKind::Cherry, count))
+    });
     if !fits {
         return false;
     }
     if let Some(m) = mind_mut(world, actor) {
         m.inventory.add(item, u32::from(amount));
+        if let Some(count) = half_fruit {
+            m.inventory.add(ItemKind::Cherry, count);
+        }
     }
 
     // Применяем добычу к объекту: куст ломается, у валуна падает запас.
     match obj.kind {
-        ObjectKind::Bush => world.set_object(pos, None),
+        ObjectKind::Bush | ObjectKind::CherryBush => world.set_object(pos, None),
         ObjectKind::Rock => {
             let mut rock = obj;
             rock.charge = rock.charge.saturating_sub(amount);
@@ -716,20 +715,6 @@ pub fn throw_items(world: &mut World, from: WorldPos, stack: ItemStack, target: 
         y: (from.y + dy / dist * fly).clamp(0.0, side),
     };
     world.item_entities.throw(from, stack, tick, landing);
-}
-
-/// Вода ли под позицией (любая глубина). Для ИИ и общего FSM.
-pub fn terrain_is_water(world: &World, pos: WorldPos) -> bool {
-    matches!(
-        terrain_at(world, pos),
-        Some(
-            TileType::Water
-                | TileType::DeepWater
-                | TileType::Ocean
-                | TileType::Ice
-                | TileType::River,
-        )
-    )
 }
 
 /// Лежит ли тайл внутри мира.

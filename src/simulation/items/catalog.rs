@@ -7,7 +7,7 @@ use crate::simulation::tile::ResourceKind;
 use super::{BodySlot, ItemClass, MAX_STACK};
 
 /// Число видов предметов (иконки UI, текстуры, массивы отображения).
-pub const ITEM_KIND_COUNT: usize = 91;
+pub const ITEM_KIND_COUNT: usize = 92;
 
 /// Вид предмета. Значения — стабильные идентификаторы (repr(u8));
 /// новые виды добавляются только в конец, чтобы не сдвигать существующие.
@@ -196,6 +196,8 @@ pub enum ItemKind {
     Charcoal,
     /// Факел (крафтится жаркой палки в костре).
     Torch,
+    /// Бревно дерева
+    TreeLog,
 }
 
 impl ItemKind {
@@ -292,6 +294,7 @@ impl ItemKind {
         ItemKind::Coal,
         ItemKind::Charcoal,
         ItemKind::Torch,
+        ItemKind::TreeLog,
     ];
 
     /// Вид предмета по стабильному значению u8 (сохранения).
@@ -388,6 +391,7 @@ impl ItemKind {
             88 => Some(Self::Coal),
             89 => Some(Self::Charcoal),
             90 => Some(Self::Torch),
+            91 => Some(Self::TreeLog),
             _ => None,
         }
     }
@@ -486,6 +490,7 @@ impl ItemKind {
             ItemKind::Coal => "coal",
             ItemKind::Charcoal => "charcoal",
             ItemKind::Torch => "torch",
+            ItemKind::TreeLog => "tree_log",
         }
     }
 
@@ -596,7 +601,8 @@ impl ItemKind {
             | ItemKind::Cherry
             | ItemKind::Coal
             | ItemKind::Charcoal
-            | ItemKind::Torch => ItemClass::Misc,
+            | ItemKind::Torch
+            | ItemKind::TreeLog => ItemClass::Misc,
             ItemKind::HelmetChainmail => ItemClass::Armor(BodySlot::Head),
             ItemKind::ChestplateChainmail => ItemClass::Armor(BodySlot::Chest),
             ItemKind::LeggingsChainmail => ItemClass::Armor(BodySlot::Legs),
@@ -700,7 +706,8 @@ impl ItemKind {
             | ItemKind::Cherry
             | ItemKind::Coal
             | ItemKind::Charcoal
-            | ItemKind::Torch => MAX_STACK,
+            | ItemKind::Torch
+            | ItemKind::TreeLog => MAX_STACK,
         }
     }
 

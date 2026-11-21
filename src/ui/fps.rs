@@ -120,12 +120,12 @@ fn update_fps(
                 format!("{:.1} °C", world.local_temperature_c(tile))
             })
             .unwrap_or_else(|| "--".to_string());
-        // Луна: фаза (16 фаз по 2 суток, смена в полдень).
+
         let moon_phase = moon::phase_label(moon::phase(clock.tick));
         // Календарные величины отображаются с единицы: в симуляции они с нуля.
         // Месяц показывается названием (12 месяцев, год начинается с марта).
         let mut panel = format!(
-            "FPS: {:.1}\nГод {}, {}, день {}, {:02}:{:02}\nТемпература: {temperature}\nФаза луны: {moon_phase}",
+            "FPS: {:.1}\nГод: {},  Месяц: {},  День: {},  {:02}:{:02}\nТемпература: {temperature}\nФаза луны: {moon_phase}",
             fps.current_fps,
             clock.year() + 1,
             clock.month_name().label(),

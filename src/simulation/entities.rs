@@ -1400,13 +1400,10 @@ impl TerrainView<'_> {
         )
     }
 
-    /// Проходим ли тайл: глубокая вода и океан — нет. Мелководье
-    /// проходимо (как у игрока вброд).
+    /// Проходим ли тайл — по общему правилу мира (`movement::blocks_movement`).
+    /// Вода, включая глубокую, проходима вплавь.
     fn passable(&self, pos: WorldPos) -> bool {
-        !matches!(
-            self.terrain_at(pos),
-            Some(TileType::DeepWater | TileType::Ocean | TileType::Ice)
-        )
+        !movement::blocks_movement(self.terrain_at(pos))
     }
 
     /// Вода ли под позицией (любая глубина).
@@ -1426,10 +1423,7 @@ impl TerrainView<'_> {
                 x: from.x + (to.x - from.x) * t,
                 y: from.y + (to.y - from.y) * t,
             };
-            if matches!(
-                self.terrain_at(point),
-                Some(TileType::DeepWater | TileType::Ocean | TileType::Ice)
-            ) {
+            if self.terrain_at(point).is_some_and(TileType::is_deep_water) {
                 return false;
             }
         }
@@ -1474,11 +1468,8 @@ impl TerrainView<'_> {
                     return Some(WorldPos::of_tile_center(TilePos { x: nx, y: ny }));
                 }
                 // Уходим от берега только по мелководью: глубина и океан
-                // для волка непроходимы, и путь через них не существует.
-                if !matches!(
-                    kind,
-                    TileType::DeepWater | TileType::Ocean | TileType::Ice
-                ) {
+                // для ИИ — не маршрут (вплавь существо может, но тонет).
+                if !kind.is_deep_water() {
                     queue.push_back((nx, ny));
                 }
                 if visited.len() >= LAND_SEARCH_LIMIT {

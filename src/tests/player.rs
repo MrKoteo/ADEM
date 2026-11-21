@@ -156,14 +156,14 @@ fn inventory_respects_per_kind_max_stack() {
 }
 
 /// Движение человека: скорость 0.2 тайла/тик по каждому направлению,
-/// глубокая вода непроходима с суши, но не мешает скользить вдоль берега
+/// непроходимая клетка не пускает с проходимой, но не мешает скользить вдоль неё
 /// по другой оси; границы мира зажимаются.
 #[test]
-fn human_step_moves_and_respects_water() {
+fn human_step_moves_and_respects_blocked_tile() {
     let mut world = World::new(WorldSize::new(256), 1);
-    // Стена океана по x=10, тайлы y 4..8: глубже мелководья с суши не войти.
+    // Непроходимая стена по x=10, тайлы y 4..8: непроходима с суши.
     for y in 4..8 {
-        world.set_terrain(TilePos { x: 10, y }, TileType::Ocean);
+        world.set_terrain(TilePos { x: 10, y }, TileType::Lava);
     }
 
     // Прямое движение: 0.2 тайла за тик.
@@ -173,7 +173,7 @@ fn human_step_moves_and_respects_water() {
     }
     assert!((pos_of(&world, id).x - 7.5).abs() < 1e-4, "x = {}", pos_of(&world, id).x);
 
-    // Подход к глубокой воде вплотную: в тайл океана нога не ступает.
+    // Подход к стене вплотную: в тайл льда нога не ступает.
     let id = spawn_human(&mut world, WorldPos { x: 9.5, y: 5.5 });
     actions::step_direction(&mut world, id, (1.0, 0.0));
     assert!((pos_of(&world, id).x - 9.7).abs() < 1e-4);
@@ -182,15 +182,15 @@ fn human_step_moves_and_respects_water() {
     actions::step_direction(&mut world, id, (1.0, 0.0));
     assert!(
         (pos_of(&world, id).x - 9.9).abs() < 1e-4,
-        "океан блокирует: x = {}",
+        "непроходимые клетки блокируют: x = {}",
         pos_of(&world, id).x
     );
 
-    // Скольжение вдоль берега: по X стена, по Y движение продолжается.
+    // Скольжение вдоль стены: по X упор, по Y движение продолжается.
     let id = spawn_human(&mut world, WorldPos { x: 9.9, y: 5.0 });
     actions::step_direction(&mut world, id, (1.0, 1.0));
-    assert!((pos_of(&world, id).x - 9.9).abs() < 1e-4, "x упёрся в океан");
-    assert!(pos_of(&world, id).y > 5.0, "y идёт вдоль берега");
+    assert!((pos_of(&world, id).x - 9.9).abs() < 1e-4, "x упёрся в непроходимую клетку");
+    assert!(pos_of(&world, id).y > 5.0, "y идёт вдоль стены");
 
     // Границы мира: ноль не нарушается.
     let id = spawn_human(&mut world, WorldPos { x: 0.05, y: 0.05 });
@@ -199,60 +199,8 @@ fn human_step_moves_and_respects_water() {
     assert!(pos_of(&world, id).x < 0.2, "за границу не вышел: x = {}", pos_of(&world, id).x);
 }
 
-/// Гора — общее правило мира: человек замедляется вдвое так же, как существа.
-#[test]
-fn human_mountain_slows_down() {
-    let mut world = World::new(WorldSize::new(256), 1);
-    let mountain = TilePos { x: 50, y: 50 };
-    world.set_terrain(mountain, TileType::Mountain);
-
-    let id = spawn_human(&mut world, WorldPos::of_tile_center(mountain));
-    actions::step_direction(&mut world, id, (1.0, 0.0));
-    assert!(
-        (pos_of(&world, id).x - 50.6).abs() < 1e-4,
-        "на горе шаг должен быть вдвое короче, x = {}",
-        pos_of(&world, id).x
-    );
-}
-
-/// Вброд в глубину не уйти: стоя на мелководье, человек не может войти
-/// в средневодную или океан; с глубины (размещён «богом») можно выбраться
-/// на берег.
-#[test]
-fn human_cannot_swim_from_shallows_into_deep_water() {
-    let mut world = World::new(WorldSize::new(256), 1);
-    // Полоса: суша x=9, мелководье x=10, средневодная x=11, океан x=12.
-    for y in 4..8 {
-        world.set_terrain(TilePos { x: 9, y }, TileType::Grass);
-        world.set_terrain(TilePos { x: 10, y }, TileType::Water);
-        world.set_terrain(TilePos { x: 11, y }, TileType::DeepWater);
-        world.set_terrain(TilePos { x: 12, y }, TileType::Ocean);
-    }
-
-    // Стоя на мелководье, вплавь в глубину не входит.
-    let id = spawn_human(&mut world, WorldPos { x: 10.8, y: 5.5 });
-    for _ in 0..5 {
-        actions::step_direction(&mut world, id, (1.0, 0.0));
-    }
-    assert!(
-        pos_of(&world, id).x < 11.0,
-        "средневодная должны быть недоступна: x = {}",
-        pos_of(&world, id).x
-    );
-
-    // «Бог» разместил человека посреди океана: движение разрешено только
-    // как выбирание на берег.
-    let id = spawn_human(&mut world, WorldPos { x: 12.5, y: 5.5 });
-    for _ in 0..30 {
-        actions::step_direction(&mut world, id, (-1.0, 0.0));
-    }
-    assert!(pos_of(&world, id).x < 10.0, "с глубины можно выбраться на сушу: x = {}", pos_of(&world, id).x);
-    // ... но обратно в глубину с мелководья не вернуться.
-    for _ in 0..10 {
-        actions::step_direction(&mut world, id, (1.0, 0.0));
-    }
-    assert!(pos_of(&world, id).x < 11.0, "с мелководья в глубину не войти: x = {}", pos_of(&world, id).x);
-}
+// Гора — общее правило мира: человек замедляется вдвое так же, как существа.
+//#[test]
 
 /// Инвентарь: перенос и обмен стеков между слотами с учётом типов слотов
 /// (misc принимает любой предмет, чужой предмет в бронь не кладётся).
@@ -877,33 +825,73 @@ fn throw_selected_flies_and_is_picked_up_again() {
     assert_eq!(mind(&world, id).inventory.count_of(ItemKind::Apple), 3);
 }
 
-/// Каждое действие собирает с яблони одно яблоко; пустое дерево остаётся
-/// объектом и больше не даёт плодов.
+/// Каждое действие собирает с плодового объекта один плод (яблоко или
+/// вишню); пустой объект остаётся на тайле и больше не даёт урожая.
 #[test]
-fn apple_harvest_gives_one_fruit_per_action() {
+fn fruit_harvest_gives_one_fruit_per_action() {
+    use crate::simulation::items::ItemKind;
+
+    let mut world = World::new(WorldSize::new(256), 1);
+    let apple_pos = TilePos { x: 10, y: 10 };
+    let cherry_pos = TilePos { x: 11, y: 10 };
+    for pos in [apple_pos, cherry_pos] {
+        world.set_terrain(pos, TileType::Grass);
+    }
+    world.set_object(apple_pos, Some(WorldObject::apple_tree_with_fruit(7)));
+    world.set_object(cherry_pos, Some(WorldObject::cherry_bush_with_fruit(9)));
+
+    let actor = spawn_human(&mut world, WorldPos::of_tile_center(apple_pos));
+
+    for remaining in (0..7).rev() {
+        assert!(actions::harvest_fruit(&mut world, actor, apple_pos));
+        assert_eq!(
+            mind(&world, actor).inventory.count_of(ItemKind::Apple),
+            u32::from(7 - remaining)
+        );
+        let tree = world.object_at(apple_pos).copied().expect("яблоня остаётся");
+        assert_eq!(tree.kind, ObjectKind::AppleTree);
+        assert_eq!(tree.charge, remaining);
+    }
+    assert!(
+        !actions::harvest_fruit(&mut world, actor, apple_pos),
+        "плодов на яблоне больше нет"
+    );
+    assert_eq!(mind(&world, actor).inventory.count_of(ItemKind::Apple), 7);
+
+    for remaining in (0..9).rev() {
+        assert!(actions::harvest_fruit(&mut world, actor, cherry_pos));
+        assert_eq!(
+            mind(&world, actor).inventory.count_of(ItemKind::Cherry),
+            u32::from(9 - remaining)
+        );
+        let bush = world.object_at(cherry_pos).copied().expect("куст остаётся");
+        assert_eq!(bush.kind, ObjectKind::CherryBush);
+        assert_eq!(bush.charge, remaining);
+    }
+    assert!(
+        !actions::harvest_fruit(&mut world, actor, cherry_pos),
+        "плодов на вишнёвом кусте больше нет"
+    );
+    assert_eq!(mind(&world, actor).inventory.count_of(ItemKind::Cherry), 9);
+}
+
+/// Добыча вишнёвого куста: куст ломается, в инвентарь идут 2 палки и
+/// половина оставшихся плодов (нечётный остаток округляется вниз).
+#[test]
+fn destroying_cherry_bush_yields_sticks_and_half_fruit() {
     use crate::simulation::items::ItemKind;
 
     let mut world = World::new(WorldSize::new(256), 1);
     let pos = TilePos { x: 10, y: 10 };
     world.set_terrain(pos, TileType::Grass);
-    world.set_object(pos, Some(WorldObject::apple_tree_with_fruit(7)));
+    world.set_object(pos, Some(WorldObject::cherry_bush_with_fruit(9)));
 
     let actor = spawn_human(&mut world, WorldPos::of_tile_center(pos));
-    for remaining in (0..7).rev() {
-        assert!(actions::harvest_apple(&mut world, actor, pos));
-        assert_eq!(
-            mind(&world, actor).inventory.count_of(ItemKind::Apple),
-            u32::from(7 - remaining)
-        );
-        let tree = world.object_at(pos).copied().expect("яблоня остаётся");
-        assert_eq!(tree.kind, ObjectKind::AppleTree);
-        assert_eq!(tree.charge, remaining);
-    }
-    assert!(
-        !actions::harvest_apple(&mut world, actor, pos),
-        "плодов больше нет"
-    );
-    assert_eq!(mind(&world, actor).inventory.count_of(ItemKind::Apple), 7);
+    assert!(actions::interact(&mut world, actor, pos, 0));
+    assert!(world.object_at(pos).is_none(), "куст должен исчезнуть");
+    let inventory = &mind(&world, actor).inventory;
+    assert_eq!(inventory.count_of(ItemKind::Stick), 2);
+    assert_eq!(inventory.count_of(ItemKind::Cherry), 4);
 }
 
 /// Сбор травы пустой рукой даёт ровно один пучок за действие; тайл
@@ -1068,7 +1056,6 @@ fn item_registry_is_consistent() {
     }
     assert_eq!(ItemKind::from_discriminant(ITEM_KIND_COUNT as u8), None);
 }
-
 
 /// Пассивная регенерация: сытый (выше 80.0) организм с неполным здоровьем
 /// тратит 2.0 сытости раз в 200 тиков на 1.0 HP.

@@ -615,8 +615,8 @@ fn rmb_action(
     }
     if world.item_at(tile).is_some() {
         queue.0.push(Command::PlayerPickupItem { pos: tile });
-    } else if world.object_at(tile).is_some_and(|obj| obj.apple_yield().is_some()) {
-        // ПКМ по яблоне — собрать плоды (ЛКМ по ней ничего не делает).
-        queue.0.push(Command::PlayerHarvestApple { pos: tile });
+    } else if world.object_at(tile).is_some_and(|obj| obj.fruit_yield().is_some()) {
+        // ПКМ по яблоне или вишнёвому кусту — собрать плоды.
+        queue.0.push(Command::PlayerHarvestFruit { pos: tile });
     }
 }

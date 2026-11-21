@@ -24,9 +24,14 @@ pub enum ObjectKind {
     Bush,
     Rock,
     AppleTree,
+    /// Вишнёвый куст: редкая замена обычного куста (5%), даёт вишню.
+    CherryBush,
     /// Постройка (рукотворное сооружение) — см. `BuildingKind`.
     Building(BuildingKind),
 }
+
+/// Доля кустов, которые при появлении становятся вишнёвыми (генерация и рост кустов).
+pub const CHERRY_BUSH_CHANCE: f32 = 0.05;
 
 /// Постройка: рукотворное сооружение. Не генерируется, ставится игроком
 /// или редактором. Новые виды — только в конец (стабильные дискриминанты).
@@ -52,12 +57,19 @@ pub enum BuildingKind {
 impl ObjectKind {
     /// Природные объекты в стабильном порядке (генерация, UI редактора).
     /// Новые виды добавляются в конец — стабильные значения не сдвигаются.
-    pub const ALL: [ObjectKind; 4] = [
+    pub const ALL: [ObjectKind; 5] = [
         ObjectKind::Tree,
         ObjectKind::Bush,
         ObjectKind::Rock,
         ObjectKind::AppleTree,
+        ObjectKind::CherryBush,
     ];
+
+    /// Куст ли вид (обычный или вишнёвый). Вишнёвый считается кустом для
+    /// предела роста кустов в чанке и для сбора палок.
+    pub fn is_bush(self) -> bool {
+        matches!(self, ObjectKind::Bush | ObjectKind::CherryBush)
+    }
 
     /// Является ли вид постройкой (у кнопок редактора, меню строительства).
     pub fn is_building(self) -> bool {
@@ -79,15 +91,16 @@ impl ObjectKind {
         self.building_kind().is_some_and(BuildingKind::is_station)
     }
 
-    /// Стабильное значение u8 (сохранения): природные виды 0–3, постройки
-    /// 4 + дискриминант вида постройки.
+    /// Стабильное значение u8 (сохранения): природные виды 0–4, постройки
+    /// 5 + дискриминант вида постройки.
     pub fn discriminant(self) -> u8 {
         match self {
             ObjectKind::Tree => 0,
             ObjectKind::Bush => 1,
             ObjectKind::Rock => 2,
             ObjectKind::AppleTree => 3,
-            ObjectKind::Building(kind) => 4 + kind as u8,
+            ObjectKind::CherryBush => 4,
+            ObjectKind::Building(kind) => 5 + kind as u8,
         }
     }
 
@@ -98,7 +111,8 @@ impl ObjectKind {
             1 => Some(Self::Bush),
             2 => Some(Self::Rock),
             3 => Some(Self::AppleTree),
-            4..=10 => BuildingKind::from_discriminant(value - 4).map(Self::Building),
+            4 => Some(Self::CherryBush),
+            5..=11 => BuildingKind::from_discriminant(value - 5).map(Self::Building),
             _ => None,
         }
     }
@@ -192,7 +206,7 @@ impl WorldObject {
         Self { kind: ObjectKind::Bush, stage: ObjectStage::Mature, charge: 0 }
     }
 
-    /// Валун с запасом камня (GAME_DESIGN, приложение A: 5–15 единиц).
+    /// Валун с запасом камня (GAME_DESIGN: 5–15 единиц).
     pub fn rock(amount: u16) -> Self {
         Self { kind: ObjectKind::Rock, stage: ObjectStage::Mature, charge: amount }
     }
@@ -220,21 +234,44 @@ impl WorldObject {
         }
     }
 
+    /// Взрослый вишнёвый куст со стандартным запасом плодов: у яблони по
+    /// умолчанию 6 плодов, полуторный запас — 9.
+    pub fn cherry_bush() -> Self {
+        Self::cherry_bush_with_fruit(9)
+    }
+
+    /// Взрослый вишнёвый куст с заданным числом плодов (генерация — 6–15).
+    pub fn cherry_bush_with_fruit(fruit: u16) -> Self {
+        Self {
+            kind: ObjectKind::CherryBush,
+            stage: ObjectStage::Mature,
+            charge: fruit,
+        }
+    }
+
     /// Что даёт объект при добыче/сборе. None — руками не добывается.
     pub fn harvest_yield(&self) -> Option<(ResourceKind, u16)> {
         match self.kind {
-            // Куст при сборе ломается и даёт две палки (решение автора).
-            ObjectKind::Bush => Some((ResourceKind::Stick, 2)),
+            // Куст (и вишнёвый) при сборе ломается и даёт две палки.
+            ObjectKind::Bush | ObjectKind::CherryBush => Some((ResourceKind::Stick, 2)),
             // От валуна откалывают камень, пока есть запас.
             ObjectKind::Rock if self.charge > 0 => Some((ResourceKind::Stone, 1)),
             _ => None,
         }
     }
 
-    /// Сколько яблок можно собрать с дерева. None — это не плодоносящая
-    /// яблоня (пустая яблоня остаётся объектом, но больше не даёт плодов).
-    pub fn apple_yield(&self) -> Option<u16> {
-        (self.kind == ObjectKind::AppleTree && self.charge > 0).then_some(self.charge)
+    /// Плодовый запас дерева/куста: предмет и сколько можно собрать.
+    /// None — вид не плодоносит или плоды уже собраны (пустой объект
+    /// остаётся на тайле, но больше не даёт урожая).
+    pub fn fruit_yield(&self) -> Option<(ItemKind, u16)> {
+        if self.charge == 0 {
+            return None;
+        }
+        match self.kind {
+            ObjectKind::AppleTree => Some((ItemKind::Apple, self.charge)),
+            ObjectKind::CherryBush => Some((ItemKind::Cherry, self.charge)),
+            _ => None,
+        }
     }
 }
 

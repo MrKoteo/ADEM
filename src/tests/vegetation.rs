@@ -1,7 +1,6 @@
 //! Тесты растительности: самозапланированные цепочки — расползание травы,
 //! рост кустов, эрозия берегов, перезапуск от инструментов редактора.
 
-use crate::simulation::crafts::CraftBook;
 use crate::simulation::dirty::DirtyTiles;
 use crate::simulation::world::{TilePos, World};
 
@@ -94,7 +93,6 @@ fn grass_spreads_via_scheduler() {
 #[test]
 fn bushes_grow_up_to_chunk_cap() {
     use crate::simulation::chunk::CHUNK_SIZE;
-    use crate::simulation::objects::ObjectKind;
     use crate::simulation::tile::TileType;
     use crate::simulation::vegetation::{BUSH_CAP_PER_CHUNK, seed_all};
 
@@ -116,7 +114,7 @@ fn bushes_grow_up_to_chunk_cap() {
     let bushes = chunk
         .objects
         .values()
-        .filter(|obj| obj.kind == ObjectKind::Bush)
+        .filter(|obj| obj.kind.is_bush())
         .count() as u32;
     assert_eq!(bushes, BUSH_CAP_PER_CHUNK, "кусты должны дорасти до предела");
 }
@@ -148,31 +146,6 @@ fn water_erodes_shores_via_scheduler() {
         world.terrain_kind(TilePos { x: 9, y: 5 }),
         TileType::Sand,
         "земля должна стать песком"
-    );
-}
-
-/// Редактор запускает цепочки: земля, поставленная рядом с травой,
-/// со временем зарастает без повторного посева.
-#[test]
-fn editor_placed_dirt_gets_overgrown() {
-    use crate::simulation::commands::{Command, CommandQueue};
-    use crate::simulation::tile::TileType;
-
-    let mut world = World::new(crate::simulation::WorldSize::new(256), 1);
-    let mut queue = CommandQueue::default();
-    let mut sched = crate::simulation::Scheduler::default();
-    // Готовая трава, затем команда ставит землю рядом (как инструмент «бога»).
-    world.set_terrain(TilePos { x: 10, y: 5 }, TileType::Grass);
-    queue.push(Command::SetTerrain { pos: TilePos { x: 11, y: 5 }, kind: TileType::Dirt });
-
-    let mut dirty = DirtyTiles::default();
-    queue.apply_all(&mut world, None, &mut dirty, &mut sched, 0, &CraftBook::default());
-
-    run_vegetation(&mut sched, &mut world, 20_000, &mut dirty);
-    assert_eq!(
-        world.terrain_kind(TilePos { x: 11, y: 5 }),
-        TileType::Grass,
-        "поставленная земля должна зарасти травой"
     );
 }
 

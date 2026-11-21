@@ -29,8 +29,8 @@ use crate::simulation::{
     WorldObject, CROP_KIND_COUNT, ITEM_KIND_COUNT, MAX_CROP_STAGES,
 };
 
-/// Число слотов `ObjectKind` (природные 0–3 и постройки 4–10).
-const OBJECT_KIND_SLOTS: usize = 11;
+/// Число слотов `ObjectKind` (природные 0–4 и постройки 5–11).
+const OBJECT_KIND_SLOTS: usize = 12;
 
 /// Число текстур стадий культур (плотная раскладка `[культура][стадия]`).
 const CROP_TEXTURE_COUNT: usize = CROP_KIND_COUNT * MAX_CROP_STAGES;
@@ -74,6 +74,7 @@ struct AtlasSources {
     crop_positions: [usize; CROP_TEXTURE_COUNT],
     object_positions: [usize; OBJECT_KIND_SLOTS],
     apple_tree_empty_position: usize,
+    cherry_bush_empty_position: usize,
     entity_positions: [EntityFramePositions; 3],
 }
 
@@ -84,7 +85,7 @@ pub(crate) struct GameTextures {
     /// Тайлы в порядке `TileType::from_discriminant(1..)`.
     tiles: Vec<Handle<Image>>,
     /// Природные объекты в порядке `ObjectKind::ALL`.
-    natural_objects: [Handle<Image>; 4],
+    natural_objects: [Handle<Image>; 5],
     /// Постройки в порядке `BuildingKind::ALL`; у каждой — один «фейс».
     buildings: [Handle<Image>; 7],
     /// Предметы по дискриминанту `ItemKind`.
@@ -116,6 +117,7 @@ enum TextureKey {
     /// Природный объект или постройка (`ObjectKind::Building`).
     Object(ObjectKind),
     AppleTreeEmpty,
+    CherryBushEmpty,
     Crop(CropKind, u8),
     Item(ItemKind),
     Entity(EntityKind, EntitySlot),
@@ -162,6 +164,7 @@ impl GameTextures {
             load(TextureKey::Object(kind))
         });
         let apple_tree_empty = load(TextureKey::AppleTreeEmpty);
+        let cherry_bush_empty = load(TextureKey::CherryBushEmpty);
         let buildings = std::array::from_fn(|index| {
             let kind = BuildingKind::ALL[index];
             debug_assert_eq!(kind as usize, index);
@@ -226,6 +229,8 @@ impl GameTextures {
         }
         let apple_tree_empty_position = sprite_sources.len();
         sprite_sources.push(apple_tree_empty.clone());
+        let cherry_bush_empty_position = sprite_sources.len();
+        sprite_sources.push(cherry_bush_empty.clone());
         for kind in BuildingKind::ALL {
             object_positions[ObjectKind::Building(kind).discriminant() as usize] =
                 sprite_sources.len();
@@ -269,6 +274,7 @@ impl GameTextures {
                 crop_positions,
                 object_positions,
                 apple_tree_empty_position,
+                cherry_bush_empty_position,
                 entity_positions,
             },
             tiles,
@@ -422,6 +428,7 @@ pub(crate) struct TextureAtlases {
     crop: [u16; CROP_TEXTURE_COUNT],
     object: [u16; OBJECT_KIND_SLOTS],
     apple_tree_empty: u16,
+    cherry_bush_empty: u16,
     entity: [EntityFrames; 3],
     /// Уникальные текстуры существ (без дублей кадров) для alpha-скана.
     entity_unique: Vec<AtlasTexture>,
@@ -468,18 +475,22 @@ impl TextureAtlases {
         &self.tile_uv
     }
 
-    /// Текстура объекта; пустая яблоня имеет отдельный кадр.
+    /// Текстура объекта; пустые яблоня и вишнёвый куст имеют отдельные кадры.
     pub(crate) fn object(&self, object: &WorldObject) -> AtlasTexture {
         match object.kind {
             ObjectKind::AppleTree if object.charge == 0 => AtlasTexture {
                 kind: AtlasKind::Sprites,
                 index: self.apple_tree_empty,
             },
+            ObjectKind::CherryBush if object.charge == 0 => AtlasTexture {
+                kind: AtlasKind::Sprites,
+                index: self.cherry_bush_empty,
+            },
             kind => self.object_kind(kind),
         }
     }
 
-    /// Текстура вида объекта (яблоня — плодоносящая).
+    /// Текстура вида объекта (яблоня и вишнёвый куст — плодоносящие).
     pub(crate) fn object_kind(&self, kind: ObjectKind) -> AtlasTexture {
         AtlasTexture {
             kind: AtlasKind::Sprites,
@@ -630,6 +641,7 @@ pub(crate) fn build_texture_atlases(
     let crop = std::array::from_fn(|index| items.indices[sources.crop_positions[index]]);
     let object = std::array::from_fn(|index| sprites.indices[sources.object_positions[index]]);
     let apple_tree_empty = sprites.indices[sources.apple_tree_empty_position];
+    let cherry_bush_empty = sprites.indices[sources.cherry_bush_empty_position];
     let entity: [EntityFrames; 3] = std::array::from_fn(|index| {
         let positions = &sources.entity_positions[index];
         EntityFrames {
@@ -667,6 +679,7 @@ pub(crate) fn build_texture_atlases(
         crop,
         object,
         apple_tree_empty,
+        cherry_bush_empty,
         entity,
         entity_unique,
     });
@@ -965,12 +978,15 @@ fn texture_path(key: TextureKey) -> String {
             TileType::Ice => "textures/tiles/ice.png",
             // Река использует ту же текстуру, что мелководье.
             TileType::River => "textures/tiles/water.png",
+            TileType::Lava => "textures/tiles/lava.png",
+            TileType::Cobblestone => "textures/tiles/cobblestone.png",
         },
         TextureKey::Object(kind) => match kind {
             ObjectKind::Tree => "textures/objects/tree.png",
             ObjectKind::Bush => "textures/objects/bush.png",
             ObjectKind::Rock => "textures/objects/rock.png",
             ObjectKind::AppleTree => "textures/objects/apple_tree.png",
+            ObjectKind::CherryBush => "textures/objects/cherry_bush.png",
             ObjectKind::Building(kind) => match kind {
                 BuildingKind::Campfire => "textures/buildings/campfire_cross.png",
                 BuildingKind::CraftingTable => "textures/buildings/crafting_table_side.png",
@@ -982,6 +998,7 @@ fn texture_path(key: TextureKey) -> String {
             },
         },
         TextureKey::AppleTreeEmpty => "textures/objects/apple_tree_empty.png",
+        TextureKey::CherryBushEmpty => "textures/objects/cherry_bush_empty.png",
         TextureKey::Crop(..) => unreachable!("культуры обработаны выше"),
         TextureKey::Item(kind) => ITEM_FILES[kind as usize],
         TextureKey::Entity(kind, slot) => match (kind, slot) {
@@ -1133,6 +1150,7 @@ const ITEM_FILES: [&str; ITEM_KIND_COUNT] = [
     "textures/items/gem/gem_coal.png",
     "textures/items/gem/gem_charcoal.png",
     "textures/items/torch.png",
+    "textures/items/tree_log.png",
 ];
 
 #[cfg(test)]

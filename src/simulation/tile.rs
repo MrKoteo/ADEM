@@ -34,6 +34,10 @@ pub enum TileType {
     Ice,
     /// Река: вода с наклонной поверхностью русла (в отличие от озёр/моря).
     River,
+    /// Лава.
+    Lava,
+    /// Булыжник.
+    Cobblestone,
 }
 
 impl TileType {
@@ -58,20 +62,28 @@ impl TileType {
             15 => Some(Self::Gravel),
             16 => Some(Self::Ice),
             17 => Some(Self::River),
+            18 => Some(Self::Lava),
+            19 => Some(Self::Cobblestone),
             _ => None,
         }
     }
 
-    /// Водный ли тайл: любая вода (включая реки и лёд) непроходима с суши.
+    /// Водный ли тайл (любая глубина, включая лёд и реку).
     pub fn is_water(self) -> bool {
         matches!(
             self,
             TileType::Water
-                | TileType::DeepWater
-                | TileType::Ocean
-                | TileType::Ice
-                | TileType::River
+            | TileType::DeepWater
+            | TileType::Ocean
+            | TileType::Ice
+            | TileType::River
         )
+    }
+
+    /// Глубокая вода (океан и глубокие озёра). Проходима вплавь, но ИИ
+    /// и выбор целей её избегают.
+    pub fn is_deep_water(self) -> bool {
+        matches!(self, TileType::DeepWater | TileType::Ocean)
     }
 
     /// Число непустых видов тайлов (без `Empty`). Выводится из

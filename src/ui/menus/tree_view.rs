@@ -408,7 +408,7 @@ pub(crate) fn spawn_tree(
 ) {
     let (title, entries) = match kind {
         MenuKind::Tech => (
-            "Дерево технологий",
+            "Технологии",
             tech.technologies
                 .iter()
                 .map(|t| TreeEntry {
@@ -543,7 +543,7 @@ pub(crate) fn spawn_tree(
                 },
             ));
             root.spawn((
-                Text::new("ПКМ — панорама, колесо — зум, Esc — закрыть"),
+                Text::new("ПКМ — панорама, Esc — закрыть"),
                 TextFont {
                     font: font.0.clone().into(),
                     font_size: 13.0.into(),
@@ -739,9 +739,7 @@ pub(crate) fn pan_zoom_tree(
     for e in wheel.read() {
         scroll += e.y;
     }
-    if scroll != 0.0
-        && let Some(cursor) = window.cursor_position()
-    {
+    if scroll != 0.0 && let Some(cursor) = window.cursor_position() {
         let old = view.zoom;
         let new = (old * 1.12_f32.powf(scroll)).clamp(MIN_ZOOM, MAX_ZOOM);
         view.offset = cursor - (cursor - view.offset) * (new / old);

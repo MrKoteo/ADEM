@@ -52,8 +52,8 @@ pub enum Command {
     /// Действие игрока: выпас захваченного кролика (ЛКМ по траве). Ест
     /// траву с кулдауном, рельеф не меняется — как автономный выпас.
     PlayerGraze { pos: TilePos },
-    /// Действие игрока: собрать яблоки с яблони (ПКМ).
-    PlayerHarvestApple { pos: TilePos },
+    /// Действие игрока: собрать плоды с яблони или вишнёвого куста (ПКМ).
+    PlayerHarvestFruit { pos: TilePos },
     /// Действие игрока: положить предмет из руки на тайл.
     PlayerDropItem { pos: TilePos },
     /// Действие игрока: положить конкретный стек на землю (остатки сетки
@@ -191,18 +191,12 @@ impl CommandQueue {
                         let mut sum = 0_i32;
                         let mut count = 0_i32;
                         for (dx, dy) in [
-                            (0, -1),
-                            (1, 0),
-                            (0, 1),
-                            (-1, 0),
-                            (1, 1),
-                            (-1, -1),
-                            (1, -1),
-                            (-1, 1),
+                            (0, -1), (1, 0),
+                            (0, 1), (-1, 0),
+                            (1, 1), (-1, -1),
+                            (1, -1), (-1, 1),
                         ] {
-                            if let Some(height) =
-                                world.height(TilePos { x: pos.x + dx, y: pos.y + dy })
-                            {
+                            if let Some(height) = world.height(TilePos { x: pos.x + dx, y: pos.y + dy }) {
                                 sum += i32::from(height);
                                 count += 1;
                             }
@@ -301,9 +295,9 @@ impl CommandQueue {
                     // и растительность не трогаются, dirty-канал не нужен.
                     actions::graze(world, actor, pos, tick);
                 }
-                Command::PlayerHarvestApple { pos } => {
+                Command::PlayerHarvestFruit { pos } => {
                     let Some(actor) = actor else { continue };
-                    if actions::harvest_apple(world, actor, pos) {
+                    if actions::harvest_fruit(world, actor, pos) {
                         dirty.decor(pos);
                         vegetation::after_tile_changed(world, sched, tick, pos);
                     }
@@ -775,8 +769,7 @@ fn find_drop_tile(world: &World, center: TilePos, stack: ItemStack) -> Option<Ti
                     && match world.item_at(pos) {
                         None => true,
                         Some(existing) => {
-                            existing.kind == stack.kind
-                                && existing.count + stack.count <= stack.kind.max_stack()
+                            existing.kind == stack.kind && existing.count + stack.count <= stack.kind.max_stack()
                         }
                     };
                 if fits {

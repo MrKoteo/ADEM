@@ -25,6 +25,7 @@ pub(crate) fn placed_object(kind: ObjectKind) -> WorldObject {
         ObjectKind::Bush => WorldObject::bush(),
         ObjectKind::Rock => WorldObject::rock(10),
         ObjectKind::AppleTree => WorldObject::apple_tree(),
+        ObjectKind::CherryBush => WorldObject::cherry_bush(),
         ObjectKind::Building(kind) => WorldObject::building(kind),
     }
 }

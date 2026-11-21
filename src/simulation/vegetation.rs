@@ -17,7 +17,7 @@
 
 use super::chunk::{CHUNK_SIZE, CHUNK_TILES, Chunk};
 use super::dirty::DirtyTiles;
-use super::objects::{ObjectKind, WorldObject};
+use super::objects::{CHERRY_BUSH_CHANCE, WorldObject};
 use super::rng::SplitMix64;
 use super::scheduler::{Scheduler, TaskKind};
 use super::tile::TileType;
@@ -27,13 +27,13 @@ use super::world::{ChunkPos, TilePos, World, split_tile, tile_pos};
 pub const GRASS_SPREAD_P: f32 = 0.0001;
 
 /// Вероятность за такт, что один тайл лесной травы вырастит куст.
-pub const BUSH_GROW_P: f32 = 0.00002;
+pub const BUSH_GROW_P: f32 = 0.00001;
 
 /// Максимум кустов в одном чанке: после предела цепочка чанка гаснет.
 pub const BUSH_CAP_PER_CHUNK: u32 = 16;
 
 /// Вероятность за такт, что тайл воды подточит одного из эродируемых соседей.
-pub const EROSION_P: f32 = 0.00008;
+pub const EROSION_P: f32 = 0.00005;
 
 /// Теги видов задач для посева RNG событий (стабильны, часть детерминизма).
 const TAG_GRASS: u8 = 1;
@@ -50,7 +50,7 @@ fn erodible(kind: TileType) -> bool {
     matches!(kind, TileType::ForestGrass | TileType::Grass | TileType::Dirt)
 }
 
-/// Во что вода превращает эродируемый сосед: лесная трава → трава,
+/// Во что вода превращает эродируемого соседа: лесная трава → трава,
 /// трава и земля → песок.
 fn eroded(kind: TileType) -> TileType {
     match kind {
@@ -114,8 +114,7 @@ pub fn seed_all_cancellable(
     cancelled: &dyn Fn() -> bool,
     progress: &dyn Fn(f32),
 ) -> bool {
-    // Посев цепочек по тайлам — ~85% времени этого прохода, кусты по
-    // чанкам — остальное.
+    // Посев цепочек по тайлам — ~85% времени этого прохода, кусты по чанкам — остальное
     const BUSH_SHARE: f32 = 0.15;
     sched.clear_world_tasks();
     let seed = world.seed;
@@ -334,7 +333,7 @@ fn bush_growth(
     let chunk_ref = world.chunk(chunk);
     let mut bushes = 0_u32;
     for obj in chunk_ref.objects.values() {
-        if obj.kind == ObjectKind::Bush {
+        if obj.kind.is_bush() {
             bushes += 1;
         }
     }
@@ -354,7 +353,13 @@ fn bush_growth(
     let mut rng = event_rng(seed, tick, TAG_BUSH, chunk, 0);
     let idx = candidates[rng.next_below(candidates.len())];
     let pos = tile_pos(chunk, idx);
-    world.set_object(pos, Some(WorldObject::bush()));
+    // 5% кустов рождаются вишнёвыми (та же доля, что при генерации).
+    let object = if rng.next_f32() < CHERRY_BUSH_CHANCE {
+        WorldObject::cherry_bush_with_fruit(rng.next_range_inclusive(6, 15) as u16)
+    } else {
+        WorldObject::bush()
+    };
+    world.set_object(pos, Some(object));
     dirty.decor(pos);
     // Продолжаем, пока есть кандидаты и предел не достигнут (проверка
     // внутри с учётом только что выросшего куста).
@@ -477,7 +482,7 @@ pub(crate) fn schedule_bush_growth(
     let mut bushes = 0_u32;
     let mut candidates = 0_usize;
     for obj in chunk_ref.objects.values() {
-        if obj.kind == ObjectKind::Bush {
+        if obj.kind.is_bush() {
             bushes += 1;
         }
     }

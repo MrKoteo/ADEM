@@ -43,7 +43,7 @@ pub enum BodySlot {
 }
 
 /// Максимум единиц одного предмета в слоте.
-pub const MAX_STACK: u32 = 64;
+pub const MAX_STACK: u32 = 100;
 
 /// Число слотов предметов (misc) разумного существа (GAME_DESIGN 3.4: 8).
 pub const MISC_SLOTS: usize = 8;
