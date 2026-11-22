@@ -8,10 +8,12 @@ use crate::simulation::{World, WorldSize};
 /// держим, а захват существа ссылается на id прежнего мира.
 #[test]
 fn new_world_request_unloads_previous_world() {
-    let mut state = GameState::default();
-    state.world_size = WorldSize::new(256);
-    state.seed = 1;
-    state.world = Some(World::new(WorldSize::new(256), 1));
+    let mut state = GameState {
+        world_size: WorldSize::new(256),
+        seed: 1,
+        world: Some(World::new(WorldSize::new(256), 1)),
+        ..GameState::default()
+    };
     state.set_controlled(Some(7));
     let mut generation = WorldGeneration::default();
 
@@ -32,10 +34,12 @@ fn new_world_request_unloads_previous_world() {
 /// генерацию и не трогает мир.
 #[test]
 fn same_params_do_not_restart_generation() {
-    let mut state = GameState::default();
-    state.world_size = WorldSize::new(256);
-    state.seed = 5;
-    state.world = Some(World::new(WorldSize::new(256), 5));
+    let mut state = GameState {
+        world_size: WorldSize::new(256),
+        seed: 5,
+        world: Some(World::new(WorldSize::new(256), 5)),
+        ..GameState::default()
+    };
     let mut generation = WorldGeneration::default();
 
     request_world(&mut state, &mut generation, WorldSize::new(256), 5, 0);

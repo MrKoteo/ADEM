@@ -13,7 +13,9 @@ use crate::simulation::ItemStack;
 use crate::simulation::TilePos;
 use crate::ui::cursor_over_node;
 
-use super::{CraftBookRes, CraftResultSlot, CraftSlot, CraftingUi, InventoryUi, InvSlot};
+use super::{
+    CraftBookRes, CraftResultSlot, CraftSlot, CraftingUi, DragSource, InventoryUi, InvSlot,
+};
 
 /// Состояние заполнения сетки крафта зажатыми кнопками: последний слот,
 /// посещённый каждой кнопкой, и слот, обработанный текущим зажатием.
@@ -58,7 +60,10 @@ pub(crate) fn on_slot_activated(
     // Под зажатой ЛКМ стек уже снят из слота в «руку» (`inventory_drag`),
     // а `Activate` приходит раньше, чем `Update` вернёт его на место.
     // Поэтому слот считается непустым и в этом случае.
-    let held_here = inv.drag.as_ref().is_some_and(|drag| drag.from == target);
+    let held_here = inv
+        .drag
+        .as_ref()
+        .is_some_and(|drag| drag.from == DragSource::Slot(target));
 
     match inv.selected {
         // Повторный клик по выбранному слоту снимает выбор.
@@ -151,9 +156,10 @@ fn take_one_from_craft_cell(craft: &mut CraftingUi, state: &mut GameState, targe
 
 /// Активация клетки сетки крафта. ЛКМ — доложить один предмет из
 /// выбранного слота инвентаря (или переложить один между клетками, или
-/// выбрать клетку), ПКМ — забрать один предмет обратно в инвентарь,
-/// Shift+ЛКМ — вернуть весь слот в инвентарь целиком. Удержание кнопки
-/// при перемещении по клеткам обрабатывает `craft_grid_hold_fill`.
+/// выбрать клетку), ПКМ — вернуть половину стека в инвентарь (одиночный
+/// предмет возвращается целиком), Shift+ЛКМ — вернуть весь слот в
+/// инвентарь целиком. Удержание кнопки при перемещении по клеткам
+/// обрабатывает `craft_grid_hold_fill`.
 pub(crate) fn on_craft_slot_activated(
     activate: On<Activate>,
     mouse: Res<ButtonInput<MouseButton>>,
@@ -164,6 +170,12 @@ pub(crate) fn on_craft_slot_activated(
     mut state: ResMut<GameState>,
     slots: Query<&CraftSlot>,
 ) {
+    // Пока стек «в руке», отпускание над клеткой — завершение перетаскивания
+    // (его обрабатывает `inventory_drag`), а не клик по клетке: иначе
+    // перетаскивание и клик сработали бы в одном кадре.
+    if inv.drag.is_some() {
+        return;
+    }
     let Ok(clicked) = slots.get(activate.entity) else {
         return;
     };
@@ -185,10 +197,11 @@ pub(crate) fn on_craft_slot_activated(
         return;
     };
 
-    // ПКМ по клетке: забрать один предмет в инвентарь. Места нет — клетка
-    // не тратится (предмет не должен исчезать «в никуда»).
+    // ПКМ по клетке: разделить стек пополам — половина остаётся в клетке,
+    // половина возвращается в инвентарь (перенос стака в сетку + дележ —
+    // привычный процесс крафта из Minecraft).
     if mouse.just_released(MouseButton::Right) {
-        take_one_from_craft_cell(&mut craft, &mut state, target);
+        split_craft_cell(&mut craft, &mut state, target);
         return;
     }
 
@@ -260,6 +273,36 @@ pub(crate) fn on_craft_slot_activated(
     if craft.slots[target].is_some() {
         craft.selected = Some(target);
     }
+}
+
+/// ПКМ по клетке сетки крафта: делит её стек пополам — меньшая половина
+/// остаётся в клетке, большая возвращается в инвентарь (при нечётном
+/// количестве лишняя единица уходит в инвентарь, как в Minecraft).
+/// Одиночный предмет тоже возвращается в инвентарь.
+/// `false` — клетка пуста или в инвентаре нет места: предметы не теряются.
+fn split_craft_cell(craft: &mut CraftingUi, state: &mut GameState, target: usize) -> bool {
+    let Some(stack) = craft.slots[target] else {
+        return false;
+    };
+    let Some(p) = state.controlled_mind_mut() else {
+        return false;
+    };
+    // Один предмет делить не на что — он просто уходит в инвентарь.
+    // Иначе половина с округлением вверх идёт в инвентарь, остаток — в клетке.
+    let mut movable = if stack.count == 1 {
+        1
+    } else {
+        stack.count - stack.count / 2
+    };
+    while movable > 0 && !p.inventory.can_fit(stack.kind, movable) {
+        movable -= 1;
+    }
+    if movable == 0 {
+        return false;
+    }
+    p.inventory.add(stack.kind, movable);
+    take_from_craft_cell(craft, target, movable);
+    true
 }
 
 /// Заполнение сетки крафта зажатыми кнопками: пока ЛКМ/ПКМ удерживается,

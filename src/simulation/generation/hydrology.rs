@@ -583,8 +583,8 @@ fn fill_lake_region(
             continue;
         }
 
-        for local in 0..w * h {
-            if !mask[local] {
+        for (local, &filled) in mask.iter().enumerate() {
+            if !filled {
                 continue;
             }
             let x = x0 + (local % w) as i32;
@@ -721,8 +721,8 @@ fn fill_lake_bounded(
         return true;
     }
     let in_region = |nx: i32, ny: i32| {
-        let cx = (nx / step) as i32;
-        let cy = (ny / step) as i32;
+        let cx = nx / step;
+        let cy = ny / step;
         for dy in -1..=1 {
             for dx in -1..=1 {
                 let mx = cx + dx;

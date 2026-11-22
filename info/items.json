@@ -90,6 +90,7 @@
     { "id": "cherry", "name": "Вишня" },
     { "id": "coal", "name": "Уголь" },
     { "id": "charcoal", "name": "Древесный уголь" },
-    { "id": "torch", "name": "Факел" }
+    { "id": "torch", "name": "Факел" },
+    { "id": "tree_log", "name": "Бревно" }
   ]
 }

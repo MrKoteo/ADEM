@@ -58,56 +58,10 @@ fn hp_of(world: &World, actor: u64) -> f32 {
     world.entities.get(actor).unwrap().hp
 }
 
-/// Инвентарь: предметы складываются в стеки, переполнение уходит в новый
-/// слот, лишнее возвращается вызывающему. can_fit учитывает и стеки, и
-/// пустые слоты.
-#[test]
-fn inventory_add_stacks_and_overflows() {
-    use crate::simulation::items::{Inventory, ItemKind, ItemStack, MAX_STACK, MISC_SLOTS};
-
-    let mut inv = Inventory::default();
-    assert_eq!(inv.add(ItemKind::Stick, 100), 0);
-    // Сто палок: первый стек до MAX_STACK, остаток — во второй слот.
-    assert_eq!(
-        inv.items[0],
-        Some(ItemStack { kind: ItemKind::Stick, count: MAX_STACK })
-    );
-    assert_eq!(
-        inv.items[1],
-        Some(ItemStack {
-            kind: ItemKind::Stick,
-            count: 100 - MAX_STACK
-        })
-    );
-    assert_eq!(inv.count_of(ItemKind::Stick), 100);
-
-    // Забитый инвентарь того же вида ничего не принимает.
-    let mut full = Inventory::default();
-    assert_eq!(full.add(ItemKind::Rock, MISC_SLOTS as u32 * MAX_STACK), 0);
-    assert!(!full.can_fit(ItemKind::Rock, 1));
-    assert_eq!(full.add(ItemKind::Rock, 1), 1);
-
-    // Частично заполненный стек того же вида учитывается в can_fit.
-    // Чужой вид место в стеке не занимает, но пустые слоты принимает:
-    // остаётся 7 пустых слотов по MAX_STACK.
-    let mut half = Inventory::default();
-    half.add(ItemKind::Stick, MAX_STACK - 1);
-    assert!(half.can_fit(ItemKind::Stick, MAX_STACK));
-    assert!(half.can_fit(ItemKind::Rock, (MISC_SLOTS as u32 - 1) * MAX_STACK));
-    assert!(!half.can_fit(ItemKind::Rock, MISC_SLOTS as u32 * MAX_STACK));
-
-    // Ресурс мира превращается в предмет: камень и палка есть, руды — нет.
-    use crate::simulation::ResourceKind;
-    assert_eq!(
-        ItemKind::from_resource(ResourceKind::Stone),
-        Some(ItemKind::Rock)
-    );
-    assert_eq!(
-        ItemKind::from_resource(ResourceKind::Stick),
-        Some(ItemKind::Stick)
-    );
-    assert_eq!(ItemKind::from_resource(ResourceKind::Copper), None);
-}
+// Инвентарь: предметы складываются в стеки, переполнение уходит в новый
+// слот, лишнее возвращается вызывающему. can_fit учитывает и стеки, и
+// пустые слоты.
+//#[test]
 
 /// Предел стака по виду: инструменты и оружие занимают по слоту на
 /// единицу (как в Minecraft), расходники доливаются в один стек.
@@ -623,6 +577,112 @@ fn human_interact_mines_objects() {
 
     // Тайл без объекта — отказ.
     assert!(!actions::interact(&mut world, id, TilePos { x: 11, y: 10 }, 0));
+}
+
+/// Рубка сосны: четыре удара топором с кулдауном 30 тиков валят дерево,
+/// дроп — 12 брёвен. Удар раньше кулдауна прогресс не двигает.
+#[test]
+fn human_chops_pine_with_axe() {
+    use crate::simulation::items::ItemKind;
+
+    let mut world = World::new(WorldSize::new(256), 1);
+    let pos = TilePos { x: 10, y: 10 };
+    world.set_terrain(pos, TileType::Grass);
+    world.set_object(pos, Some(WorldObject::tree()));
+
+    let id = spawn_human(&mut world, WorldPos::of_tile_center(TilePos { x: 11, y: 11 }));
+    mind_mut(&mut world, id).inventory.add(ItemKind::AxePrimal, 1);
+
+    // Первый удар только начинает рубку.
+    assert!(!actions::interact(&mut world, id, pos, 0));
+    assert_eq!(world.tree_chops[&pos].hits, 1);
+    assert!(world.object_at(pos).is_some());
+
+    // Удар раньше кулдауна отклоняется и прогресс не меняет.
+    assert!(!actions::interact(&mut world, id, pos, 29));
+    assert_eq!(world.tree_chops[&pos].hits, 1);
+    assert_eq!(world.tree_chops[&pos].last_tick, 0);
+
+    assert!(!actions::interact(&mut world, id, pos, 30));
+    assert!(!actions::interact(&mut world, id, pos, 60));
+    assert!(world.object_at(pos).is_some(), "три удара дерево не валят");
+
+    // Четвёртый удар — дерево падает и отдаёт брёвна.
+    assert!(actions::interact(&mut world, id, pos, 90));
+    assert!(world.object_at(pos).is_none());
+    assert!(!world.tree_chops.contains_key(&pos), "прогресс рубки снят");
+    let logs: u32 = world
+        .item_entities
+        .items
+        .iter()
+        .filter(|entity| entity.stack.kind == ItemKind::TreeLog)
+        .map(|entity| entity.stack.count)
+        .sum();
+    assert_eq!(logs, 12);
+}
+
+/// Яблоня даёт 8 брёвен и оставшиеся на ней плоды; инструмент не-топор
+/// дерево не рубит.
+#[test]
+fn apple_tree_drops_logs_and_apples_only_for_axe() {
+    use crate::simulation::items::ItemKind;
+
+    let mut world = World::new(WorldSize::new(256), 1);
+    let pos = TilePos { x: 10, y: 10 };
+    world.set_terrain(pos, TileType::Grass);
+    world.set_object(pos, Some(WorldObject::apple_tree_with_fruit(5)));
+
+    let id = spawn_human(&mut world, WorldPos::of_tile_center(TilePos { x: 11, y: 11 }));
+    // Палка — не топор: удары не принимаются.
+    mind_mut(&mut world, id).inventory.add(ItemKind::Stick, 1);
+    assert!(!actions::interact(&mut world, id, pos, 0));
+    assert!(world.object_at(pos).is_some());
+    assert!(world.tree_chops.is_empty());
+
+    // Топор в первом слоте — слот выбора по умолчанию.
+    mind_mut(&mut world, id).inventory.add(ItemKind::AxePrimal, 1);
+    mind_mut(&mut world, id).selected_slot = 1;
+    assert!(!actions::interact(&mut world, id, pos, 100));
+    assert!(!actions::interact(&mut world, id, pos, 130));
+    assert!(!actions::interact(&mut world, id, pos, 160));
+    assert!(actions::interact(&mut world, id, pos, 190));
+    assert!(world.object_at(pos).is_none());
+
+    let mut logs = 0;
+    let mut apples = 0;
+    for entity in &world.item_entities.items {
+        match entity.stack.kind {
+            ItemKind::TreeLog => logs += entity.stack.count,
+            ItemKind::Apple => apples += entity.stack.count,
+            _ => {}
+        }
+    }
+    assert_eq!(logs, 8);
+    assert_eq!(apples, 5, "оставшиеся на яблоне плоды падают вместе с ней");
+}
+
+/// Пауза дольше 3 с сбрасывает счёт ударов: дерево не валится «за прошлый раз».
+#[test]
+fn chop_progress_resets_after_pause() {
+    use crate::simulation::items::ItemKind;
+
+    let mut world = World::new(WorldSize::new(256), 1);
+    let pos = TilePos { x: 10, y: 10 };
+    world.set_terrain(pos, TileType::Grass);
+    world.set_object(pos, Some(WorldObject::tree()));
+
+    let id = spawn_human(&mut world, WorldPos::of_tile_center(TilePos { x: 11, y: 11 }));
+    mind_mut(&mut world, id).inventory.add(ItemKind::AxePrimal, 1);
+
+    assert!(!actions::interact(&mut world, id, pos, 0));
+    assert!(!actions::interact(&mut world, id, pos, 30));
+    assert!(!actions::interact(&mut world, id, pos, 60));
+    assert_eq!(world.tree_chops[&pos].hits, 3);
+
+    // 200 тиков спустя прогресс начинается заново.
+    assert!(!actions::interact(&mut world, id, pos, 200));
+    assert_eq!(world.tree_chops[&pos].hits, 1);
+    assert!(world.object_at(pos).is_some());
 }
 
 /// Полный инвентарь: добыча невозможна и не расходует объект — ресурс

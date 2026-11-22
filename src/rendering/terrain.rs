@@ -21,7 +21,7 @@ use bevy::render::render_resource::AsBindGroup;
 use bevy::shader::ShaderRef;
 
 use crate::app::camera::WorldCamera;
-use crate::app::state::GameState;
+use crate::app::state::{ClockRes, GameState};
 use crate::simulation::dirty::DirtyTiles;
 use crate::simulation::{ChunkPos, TerrainTiles, TilePos, TileType, World, CHUNK_SIZE, TILE_SIZE};
 use crate::ui::UiFont;
@@ -315,6 +315,7 @@ pub(crate) fn ensure_ground_material(
 pub(crate) fn render_world(
     mut commands: Commands,
     time: Res<Time>,
+    clock: Res<ClockRes>,
     mut state: ResMut<GameState>,
     mut render: ResMut<TerrainRender>,
     mut metrics: ResMut<RenderMetrics>,
@@ -400,6 +401,15 @@ pub(crate) fn render_world(
     let Projection::Orthographic(ortho) = projection else {
         return;
     };
+    // Тряска деревьев от удара топором: смещения живут в рендере, а
+    // прогресс рубки — в симуляции. Кадр точечно пересобирает декор
+    // тайлов, у которых смещение изменилось (и вернувшихся в ноль).
+    if sprite_assets.update_tree_shakes(world, clock.0.tick, camera_transform.rotation) {
+        metrics.decor_events += sprite_assets.shaken_tiles().len() as u32;
+        for &pos in sprite_assets.shaken_tiles() {
+            dirty.decor(pos);
+        }
+    }
     let lens_tints = Arc::clone(&render.lens_tints);
 
     // Dirty-рельеф копится в очереди и обрабатывается по бюджету. На LOD 0–2

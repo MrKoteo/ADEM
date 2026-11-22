@@ -481,18 +481,22 @@ impl CraftRecipe {
 
     /// Снимает ингредиенты с сетки после успешного крафта. Для формы —
     /// по одному предмету из каждой занятой клетки; для бесформенного —
-    /// ровно столько, сколько указано в рецепте.
+    /// ровно столько, сколько указано в рецепте. Инструменты в сетке —
+    /// помощники и не расходуются (см. `is_grid_tool`).
     pub fn consume(&self, grid: &mut [Option<ItemStack>; GRID_SLOTS]) {
         match &self.body {
             RecipeBody::Shapeless(ingredients) => {
                 for &(kind, count) in ingredients {
+                    if is_grid_tool(kind) {
+                        continue;
+                    }
                     let mut left = count;
                     for cell in grid.iter_mut() {
                         if left == 0 {
                             break;
                         }
                         let Some(stack) = cell else { continue };
-                        if stack.kind != kind {
+                        if stack.kind != kind || is_grid_tool(stack.kind) {
                             continue;
                         }
                         let take = stack.count.min(left);
@@ -507,6 +511,9 @@ impl CraftRecipe {
             RecipeBody::Shaped(_) => {
                 for cell in grid.iter_mut() {
                     let Some(stack) = cell else { continue };
+                    if is_grid_tool(stack.kind) {
+                        continue;
+                    }
                     stack.count -= 1;
                     if stack.count == 0 {
                         *cell = None;
@@ -697,6 +704,14 @@ impl CraftRecipe {
     }
 }
 
+/// Инструмент в сетке крафта — «помощник»: он нужен рецепту, но при
+/// крафте не расходуется (иначе топор или молоток исчезал бы после
+/// первого же предмета). Результат-инструмент правилом не затрагивается:
+/// расходуется только содержимое клеток.
+fn is_grid_tool(kind: ItemKind) -> bool {
+    kind.tool_class().is_some()
+}
+
 /// Складывает стоимость одного ингредиента в список «вид → количество».
 fn add_cost(cost: &mut Vec<(ItemKind, u32)>, kind: ItemKind, count: u32) {
     match cost.iter_mut().find(|(existing, _)| *existing == kind) {
@@ -706,16 +721,24 @@ fn add_cost(cost: &mut Vec<(ItemKind, u32)>, kind: ItemKind, count: u32) {
 }
 
 /// Стоимость одного крафта по телу рецепта (считается при загрузке).
+/// Инструменты в сетке — помощники и не расходуются, поэтому в стоимость
+/// не входят: иначе один топор ограничивал бы массовый крафт одним разом.
 fn build_cost(body: &RecipeBody) -> Vec<(ItemKind, u32)> {
     let mut cost = Vec::new();
     match body {
         RecipeBody::Shaped(pattern) => {
             for kind in pattern.cells.iter().flatten() {
+                if is_grid_tool(*kind) {
+                    continue;
+                }
                 add_cost(&mut cost, *kind, 1);
             }
         }
         RecipeBody::Shapeless(ingredients) => {
             for &(kind, count) in ingredients {
+                if is_grid_tool(kind) {
+                    continue;
+                }
                 add_cost(&mut cost, kind, count);
             }
         }

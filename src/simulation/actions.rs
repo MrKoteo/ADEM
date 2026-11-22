@@ -29,6 +29,17 @@ pub const BUILDING_BREAK_TICKS: u64 = 80;
 /// единицы тиков; пауза зажатия дольше — зажатие прервано.
 const BUILDING_BREAK_RESET_TICKS: u64 = 5;
 
+/// Сколько ударов топором валят дерево.
+pub const TREE_CHOP_HITS: u8 = 4;
+/// Кулдаун между ударами топором по дереву, в тиках (1.5 с на x1).
+pub const TREE_CHOP_COOLDOWN_TICKS: u64 = 30;
+/// Разрыв в тиках между ударами, при котором прогресс рубки сбрасывается.
+/// Дерево — не постройка: удары можно повторять с паузами до 3 с.
+const TREE_CHOP_RESET_TICKS: u64 = 60;
+/// Сколько брёвен даёт сосна (`Tree`) и яблоня (`AppleTree`).
+pub const TREE_LOG_YIELD: u32 = 12;
+pub const APPLE_TREE_LOG_YIELD: u32 = 8;
+
 /// Сколько пучков травы даёт один травяной тайл: единица, как и у камня.
 const GRASS_YIELD_PER_TILE: u32 = 1;
 
@@ -255,9 +266,10 @@ pub fn eat_selected(world: &mut World, actor: u64) -> bool {
 /// тайл вне мира, дальше радиуса, объект руками не добывается или
 /// в инвентаре нет места.
 ///
-/// Порядок: объект на тайле (куст, валун) добывается как раньше;
-/// зрелая культура на пашне убирается; мотыга в руке пашет траву/землю
-/// в пашню; пустой травяной тайл даёт пучок травы пустой рукой или ножом.
+/// Порядок: дерево валится топором за несколько ударов; куст и валун
+/// добываются сразу; зрелая культура на пашне убирается; мотыга в руке
+/// пашет траву/землю в пашню; пустой травяной тайл даёт пучок травы
+/// пустой рукой или ножом.
 /// `tick` нужен повторяемым правилам: сбор травы лишь с вероятностью
 /// превращает тайл в землю, и бросок должен меняться от попытки к попытке.
 pub fn interact(world: &mut World, actor: u64, pos: TilePos, tick: u64) -> bool {
@@ -265,6 +277,11 @@ pub fn interact(world: &mut World, actor: u64, pos: TilePos, tick: u64) -> bool 
         return false;
     }
     if let Some(obj) = world.object_at(pos).copied() {
+        // Деревья валятся топором по ударам, остальные объекты (куст,
+        // валун) добываются сразу за одно действие.
+        if matches!(obj.kind, ObjectKind::Tree | ObjectKind::AppleTree) {
+            return chop_tree(world, actor, pos, obj, tick);
+        }
         return harvest_object(world, actor, pos, obj);
     }
     if world.crop_at(pos).is_some() {
@@ -390,6 +407,76 @@ pub fn harvest_fruit(world: &mut World, actor: u64, pos: TilePos) -> bool {
     let mut object = obj;
     object.charge = amount - 1;
     world.set_object(pos, Some(object));
+    true
+}
+
+/// Удар топором по дереву. Прогресс копится в `World::tree_chops`:
+/// `TREE_CHOP_HITS` ударов с паузой не больше `TREE_CHOP_RESET_TICKS`
+/// валят дерево. Удар расходует общий кулдаун атаки существа
+/// (`attack_ready_tick`), поэтому зажатая ЛКМ рубит не чаще раза в
+/// `TREE_CHOP_COOLDOWN_TICKS` — так же, как бьют существ оружием.
+///
+/// Дроп: сосна (`Tree`) даёт `TREE_LOG_YIELD` брёвен, яблоня — меньше
+/// брёвен и все оставшиеся плоды. `false` — в руке не топор, кулдаун
+/// ещё не прошёл, дерево далеко или это не последний удар (тогда на
+/// земле ничего не меняется, но прогресс и тряска видны).
+fn chop_tree(world: &mut World, actor: u64, pos: TilePos, obj: WorldObject, tick: u64) -> bool {
+    if selected_item(world, actor).and_then(ItemKind::tool_class) != Some(ToolClass::Axe) {
+        return false;
+    }
+    let Some(m) = mind_mut(world, actor) else {
+        return false;
+    };
+    if tick < m.attack_ready_tick {
+        return false;
+    }
+    m.attack_ready_tick = tick + TREE_CHOP_COOLDOWN_TICKS;
+
+    // Счёт непрерывен, пока удары идут с паузой не больше лимита.
+    let hits = match world.tree_chops.get(&pos) {
+        Some(chop) if tick - chop.last_tick <= TREE_CHOP_RESET_TICKS => chop.hits + 1,
+        _ => 1,
+    };
+    if hits < TREE_CHOP_HITS {
+        world.tree_chops.insert(
+            pos,
+            super::world::TreeChop {
+                hits,
+                last_tick: tick,
+            },
+        );
+        return false;
+    }
+    world.tree_chops.remove(&pos);
+
+    // Дерево падает: брёвна (и оставшиеся плоды яблони) летят на землю.
+    let center = WorldPos::of_tile_center(pos);
+    let logs = if obj.kind == ObjectKind::AppleTree {
+        APPLE_TREE_LOG_YIELD
+    } else {
+        TREE_LOG_YIELD
+    };
+    world.item_entities.drop_stack(
+        world.seed,
+        center,
+        ItemStack {
+            kind: ItemKind::TreeLog,
+            count: logs,
+        },
+        tick,
+    );
+    if obj.kind == ObjectKind::AppleTree && obj.charge > 0 {
+        world.item_entities.drop_stack(
+            world.seed,
+            center,
+            ItemStack {
+                kind: ItemKind::Apple,
+                count: obj.charge as u32,
+            },
+            tick,
+        );
+    }
+    world.set_object(pos, None);
     true
 }
 

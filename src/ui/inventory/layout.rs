@@ -6,7 +6,9 @@ use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 use bevy::ui_widgets::Button;
 
+use crate::simulation::crafts::GRID_SLOTS;
 use crate::simulation::items::{ARMOR_LAYOUT, SlotArea, SlotRef};
+use crate::simulation::ItemStack;
 use crate::ui::UiFont;
 use crate::ui::bottom_panel::{FitDone, FitIcon};
 use crate::ui::icons::UiIcons;
@@ -477,17 +479,33 @@ fn spawn_crafting(panel: &mut ChildSpawnerCommands, font: &UiFont) {
         });
 }
 
+/// Кэш подобранного рецепта сетки крафта: иконка и счётчик результата
+/// зависят только от содержимого клеток, поэтому рецепт ищется при
+/// изменении сетки, а не каждый кадр.
+#[derive(Default)]
+pub(crate) struct CraftResultCache {
+    grid: Option<[Option<ItemStack>; GRID_SLOTS]>,
+    result: Option<ItemStack>,
+}
+
 pub(crate) fn refresh_crafting(
     mut commands: Commands,
     craft: Res<CraftingUi>,
     book: Res<CraftBookRes>,
+    mut cache: Local<CraftResultCache>,
     mut slots: Query<(&CraftSlot, &mut BorderColor, &Children), Without<CraftResultSlot>>,
     mut results: Query<(&mut BorderColor, &Children), With<CraftResultSlot>>,
     mut images: Query<&mut ImageNode>,
     mut texts: Query<&mut Text>,
     icons: Res<UiIcons>,
 ) {
-    let result = book.0.matching_recipe(&craft.slots).map(|recipe| recipe.result);
+    // Поиск рецепта — только при смене содержимого сетки: система идёт
+    // каждый кадр, а рецепт от чего-либо другого не зависит.
+    if cache.grid != Some(craft.slots) {
+        cache.grid = Some(craft.slots);
+        cache.result = book.0.matching_recipe(&craft.slots).map(|recipe| recipe.result);
+    }
+    let result = cache.result;
 
     for (slot, mut border, children) in &mut slots {
         let stack = craft.slots[slot.index];

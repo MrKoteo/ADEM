@@ -1,0 +1,10 @@
+{
+  "id": "sticks_from_treelog",
+  "parent": "manual",
+  "shapeless": true,
+  "ingredients":[
+    {"item":"tree_log","count": 1 },
+    {"item":"primal_axe","count": 1 }
+  ],
+  "result":{"item":"stick","count": 8 }
+}

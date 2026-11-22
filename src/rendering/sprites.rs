@@ -80,6 +80,13 @@ pub(crate) struct WorldSpriteAssets {
     /// фиксирован, но вызовы `ground_screen_vertical_offset` шли на каждый
     /// объект и предмет каждого блока.
     ground_offsets: HashMap<[u32; 4], DecorOffsets>,
+    /// Горизонтальное смещение тряски деревьев по тайлу (мировые единицы).
+    /// Заполняется из `World::tree_chops` на кадре, поэтому пересборка
+    /// декора не трогает симуляцию.
+    tree_shake: HashMap<TilePos, Vec3>,
+    /// Тайлы, где смещение тряски изменилось в текущем кадре, — рендер
+    /// пересобирает их декор. Вектор переиспользуется между кадрами.
+    tree_shake_dirty: Vec<TilePos>,
 }
 
 /// Предвычисленные при данном повороте камеры величины декора.
@@ -121,6 +128,50 @@ impl WorldSpriteAssets {
             .entry(texture_size)
             .or_insert_with(|| object_sprite_size(texture_size))
     }
+
+    /// Текущее смещение тряски дерева на тайле (ноль — не трясётся).
+    pub(crate) fn tree_shake(&self, pos: TilePos) -> Vec3 {
+        self.tree_shake.get(&pos).copied().unwrap_or(Vec3::ZERO)
+    }
+
+    /// Пересчитывает тряску деревьев по прогрессу рубки (`World::tree_chops`)
+    /// и копит тайлы, чьё смещение изменилось, в `tree_shake_dirty`.
+    /// `false` — тряски нет и не было: декор пересобирать не нужно.
+    /// Смещение — затухающая синусоида по экранной горизонтали, два
+    /// колебания за `TREE_SHAKE_TICKS`.
+    pub(crate) fn update_tree_shakes(
+        &mut self,
+        world: &World,
+        tick: u64,
+        camera_rotation: Quat,
+    ) -> bool {
+        self.tree_shake_dirty.clear();
+        if self.tree_shake.is_empty() && world.tree_chops.is_empty() {
+            return false;
+        }
+        // Прошлые смещения тоже возвращаем к нулю — их блоки грязные.
+        self.tree_shake_dirty.extend(self.tree_shake.keys().copied());
+        self.tree_shake.clear();
+        let right = camera_rotation * Vec3::X;
+        for (&pos, chop) in &world.tree_chops {
+            let age = tick.saturating_sub(chop.last_tick);
+            if age >= TREE_SHAKE_TICKS {
+                continue;
+            }
+            let t = age as f32 / TREE_SHAKE_TICKS as f32;
+            let wobble = (t * std::f32::consts::TAU * 2.0).sin() * (1.0 - t);
+            self.tree_shake.insert(pos, right * (TREE_SHAKE_PX * wobble));
+            self.tree_shake_dirty.push(pos);
+        }
+        // Пересборка нужна, только если смещение у какого-то тайла изменилось:
+        // у дерева с давно сброшенным прогрессом тряски уже нет.
+        !self.tree_shake_dirty.is_empty()
+    }
+
+    /// Тайлы, у которых тряска изменилась в этом кадре.
+    pub(crate) fn shaken_tiles(&self) -> &[TilePos] {
+        &self.tree_shake_dirty
+    }
 }
 
 /// Контур выделения для одной текстуры: материал белого дилатированного
@@ -137,6 +188,12 @@ pub(crate) struct OutlineAsset {
 const HURT_FLASH_SECS: f32 = 0.33;
 /// Подсветка урона: красный поверх текстуры с 60% альфы.
 const HURT_TINT: Color = Color::srgba(1.0, 0.0, 0.0, 0.6);
+
+/// Длительность и амплитуда тряски дерева после удара топором, в тиках
+/// и мировых единицах. Смещение — по экранной горизонтали (камера
+/// зафиксирована, поворот — фиксированный изометрический ракурс).
+const TREE_SHAKE_TICKS: u64 = 8;
+const TREE_SHAKE_PX: f32 = 2.5;
 
 /// Вспышки урона существ: предыдущие HP (для детекта удара), таймеры
 /// подсветки и overlay-спрайты «краснее» поверх основной текстуры.
@@ -1409,6 +1466,18 @@ fn collect_objects(
                     _ => {
                         let texture = atlases.object(obj);
                         let uv = atlases.uv(texture);
+                        // Тряска от удара топором — только у деревьев.
+                        let shake = if matches!(
+                            obj.kind,
+                            ObjectKind::Tree | ObjectKind::AppleTree
+                        ) {
+                            sprite_assets.tree_shake(TilePos {
+                                x: tile_x,
+                                y: tile_y,
+                            })
+                        } else {
+                            Vec3::ZERO
+                        };
                         // Размер по текстуре берётся из кэша: массовая
                         // пересборка LOD-0 блоков не пересчитывает его
                         // для каждого дерева/куста.
@@ -1418,7 +1487,7 @@ fn collect_objects(
                         // изменения высоты: спрайт «стоит» на тайле, но
                         // не уходит под рельеф.
                         let mut transform = Transform::from_translation(
-                            anchor + offsets.camera_up * height + offsets.object_drop,
+                            anchor + offsets.camera_up * height + offsets.object_drop + shake,
                         )
                         .with_rotation(camera_rotation);
                         transform.scale = Vec3::new(size.x, size.y, 1.0);

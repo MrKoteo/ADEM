@@ -123,6 +123,10 @@ pub struct World {
     /// Прогресс ломания построек (транзиент, в сейв не пишется): тики
     /// непрерывного зажатия ЛКМ по постройке. Ключ — тайл постройки.
     pub building_breaks: HashMap<TilePos, BuildingBreak>,
+    /// Прогресс рубки деревьев (транзиент, в сейв не пишется): число
+    /// принятых ударов топором по тайлу и тик последнего удара. Ключ —
+    /// тайл дерева; дерево падает с `TREE_CHOP_HITS`-го удара.
+    pub tree_chops: HashMap<TilePos, TreeChop>,
     /// Переиспользуемые буферы поведения фауны (снимки, пространственные
     /// сетки): не сохраняются и не влияют на детерминизм.
     pub(crate) fauna_scratch: FaunaScratch,
@@ -142,6 +146,15 @@ pub struct BuildingBreak {
     /// Тиков непрерывного зажатия накоплено.
     pub progress: u16,
     /// Тик последнего удара: большой зазор сбрасывает прогресс.
+    pub last_tick: u64,
+}
+
+/// Накопленный прогресс рубки дерева (simulation/actions.rs).
+#[derive(Clone, Copy, Debug)]
+pub struct TreeChop {
+    /// Принятых ударов топором накоплено.
+    pub hits: u8,
+    /// Тик последнего удара: большой зазор сбрасывает счёт.
     pub last_tick: u64,
 }
 
@@ -202,6 +215,7 @@ impl World {
         bytes += (self.stuck_spears.capacity() as u64) * size_of::<StuckSpear>();
         bytes += (self.item_entities.len() as u64) * size_of::<ItemEntity>();
         bytes += map_bytes::<TilePos, BuildingBreak>(self.building_breaks.len());
+        bytes += map_bytes::<TilePos, TreeChop>(self.tree_chops.len());
         bytes += self.climate.memory_bytes();
         bytes += self.moisture.memory_bytes();
         bytes
@@ -226,6 +240,7 @@ impl World {
             next_projectile_id: 0,
             item_entities: ItemEntities::default(),
             building_breaks: HashMap::new(),
+            tree_chops: HashMap::new(),
             fauna_scratch: FaunaScratch::default(),
             entity_scratch: EntityScratch::default(),
             ai_scratch: AiScratch::default(),

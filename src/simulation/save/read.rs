@@ -199,8 +199,10 @@ pub fn load_game(bytes: &[u8]) -> Result<SavedGame, SaveError> {
             stuck_spears,
             next_projectile_id,
             item_entities,
-            // Прогресс ломания — транзиент: после загрузки зажатие начинать заново.
+            // Прогресс ломания и рубки — транзиент: после загрузки зажатие
+            // начинать заново.
             building_breaks: std::collections::HashMap::new(),
+            tree_chops: std::collections::HashMap::new(),
             fauna_scratch: Default::default(),
             entity_scratch: Default::default(),
             ai_scratch: Default::default(),

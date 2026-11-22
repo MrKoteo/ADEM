@@ -221,6 +221,8 @@ impl CommandQueue {
                         // Прогресс ломания привязан к постройке на тайле:
                         // новая/убранная постройка начинается с нуля.
                         world.building_breaks.remove(&pos);
+                        // То же для рубки: счёт ударов принадлежит дереву.
+                        world.tree_chops.remove(&pos);
                         world.set_object_with_container(pos, object);
                         dirty.decor(pos);
                         vegetation::after_tile_changed(world, sched, tick, pos);
