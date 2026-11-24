@@ -1,10 +1,10 @@
 //! Рецепты крафта из `data/crafts/**/*.json` и сопоставление с сеткой 3×3.
 //!
 //! У каждого рецепта есть `parent` — вид (или виды) крафтера, которому
-//! рецепт доступен. Значения: `manual`, `crafting_table`, `smithing_table`,
+//! рецепт доступен. Значения: `manual`, `workshop`, `smithing_table`,
 //! `campfire`, `furnace`, `blast_furnace`. Схема рецепта зависит от вида
 //! крафтера:
-//! - сеточные (`manual`, `crafting_table`, `smithing_table`) — `shaped`
+//! - сеточные (`manual`, `workshop`, `smithing_table`) — `shaped`
 //!   (по умолчанию) с картой символов `ingredients` и сеткой `grid` или
 //!   `shapeless` с массивом `ingredients`;
 //! - кулинарные (`campfire`, `furnace`, `blast_furnace`) — один `input`,
@@ -35,6 +35,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use super::items::{ITEM_KIND_COUNT, Inventory, ItemKind, ItemStack};
+use super::knowledge::{KnowledgeCatalog, KnowledgeSet};
 use super::objects::BuildingKind;
 
 /// Имя корневой группы (и корневой папки данных): ручной крафт в инвентаре.
@@ -58,7 +59,7 @@ pub enum CrafterKind {
     /// Сетка 3×3 в окне инвентаря.
     Manual,
     /// Верстак: сетка 3×3, наследует `manual`.
-    CraftingTable,
+    Workshop,
     /// Кузнечный стол: сетка 3×3 + обязательные инструменты.
     SmithingTable,
     /// Костёр: готовая еда, топливо не нужно.
@@ -80,7 +81,7 @@ pub enum RecipeShape {
 
 const MANUAL_CHAIN: &[CrafterKind] = &[CrafterKind::Manual];
 const CRAFTING_TABLE_CHAIN: &[CrafterKind] =
-    &[CrafterKind::Manual, CrafterKind::CraftingTable];
+    &[CrafterKind::Manual, CrafterKind::Workshop];
 const SMITHING_TABLE_CHAIN: &[CrafterKind] = &[CrafterKind::SmithingTable];
 const CAMPFIRE_CHAIN: &[CrafterKind] = &[CrafterKind::Campfire];
 const FURNACE_CHAIN: &[CrafterKind] = &[CrafterKind::Furnace];
@@ -90,7 +91,7 @@ impl CrafterKind {
     /// Все виды крафтеров в порядке групп.
     pub const ALL: [CrafterKind; 6] = [
         Self::Manual,
-        Self::CraftingTable,
+        Self::Workshop,
         Self::SmithingTable,
         Self::Campfire,
         Self::Furnace,
@@ -104,7 +105,7 @@ impl CrafterKind {
     pub const fn id(self) -> &'static str {
         match self {
             Self::Manual => "manual",
-            Self::CraftingTable => "crafting_table",
+            Self::Workshop => "workshop",
             Self::SmithingTable => "smithing_table",
             Self::Campfire => "campfire",
             Self::Furnace => "furnace",
@@ -120,7 +121,7 @@ impl CrafterKind {
     /// Схема рецептов, которую принимает крафтер.
     pub const fn recipe_shape(self) -> RecipeShape {
         match self {
-            Self::Manual | Self::CraftingTable | Self::SmithingTable => RecipeShape::Grid,
+            Self::Manual | Self::Workshop | Self::SmithingTable => RecipeShape::Grid,
             Self::Campfire | Self::Furnace | Self::BlastFurnace => RecipeShape::Cooking,
         }
     }
@@ -135,7 +136,7 @@ impl CrafterKind {
     pub const fn recipe_chain(self) -> &'static [CrafterKind] {
         match self {
             Self::Manual => MANUAL_CHAIN,
-            Self::CraftingTable => CRAFTING_TABLE_CHAIN,
+            Self::Workshop => CRAFTING_TABLE_CHAIN,
             Self::SmithingTable => SMITHING_TABLE_CHAIN,
             Self::Campfire => CAMPFIRE_CHAIN,
             Self::Furnace => FURNACE_CHAIN,
@@ -147,7 +148,7 @@ impl CrafterKind {
     pub fn from_building(kind: BuildingKind) -> Option<Self> {
         match kind {
             BuildingKind::Campfire => Some(Self::Campfire),
-            BuildingKind::CraftingTable => Some(Self::CraftingTable),
+            BuildingKind::Workshop => Some(Self::Workshop),
             BuildingKind::Furnace => Some(Self::Furnace),
             BuildingKind::BlastFurnace => Some(Self::BlastFurnace),
             BuildingKind::SmithingTable => Some(Self::SmithingTable),
@@ -184,6 +185,8 @@ pub struct CraftRecipe {
     /// Стоимость одного крафта (слитая и отсортированная). Для готовки —
     /// вход. Считается один раз при загрузке: массовый крафт не аллоцирует.
     cost: Vec<(ItemKind, u32)>,
+    /// Требуемые технологии/SI (id карточек). Пусто — требований нет.
+    pub knowledge: Vec<String>,
 }
 
 /// Обрезанная по занятым клеткам форма рецепта.
@@ -261,7 +264,7 @@ impl CraftBook {
     }
 
     /// Рецепт первой подходящей группы из `crafters` (порядок важен:
-    /// наследование — `manual` раньше `crafting_table`). `held_tools` —
+    /// наследование — `manual` раньше `workshop`). `held_tools` —
     /// виды предметов в слотах инструментов станции (кузнечный стол).
     pub fn matching_recipe_for(
         &self,
@@ -477,6 +480,61 @@ impl CraftRecipe {
         self.tools
             .iter()
             .all(|tool| held_tools.contains(tool))
+    }
+
+    /// Все ли требования знания выполнены. Неизвестный id считается
+    /// невыполненным требованием (защита от опечаток в данных).
+    pub fn knowledge_satisfied(
+        &self,
+        known: &KnowledgeSet,
+        catalog: &KnowledgeCatalog,
+    ) -> bool {
+        self.knowledge.iter().all(|id| {
+            catalog
+                .index_of(id)
+                .is_some_and(|index| known.has(index))
+        })
+    }
+
+    /// Стоимость рецепта без инструментов.
+    pub fn cost(&self) -> &[(ItemKind, u32)] {
+        &self.cost
+    }
+
+    /// Хватает ли ингредиентов и инструментов в инвентаре (без сетки).
+    /// Нужно ИИ, который крафтит «в уме», а не через UI-сетку.
+    pub fn can_craft_from_inventory(&self, inventory: &Inventory) -> bool {
+        if !self.is_grid() || !self.tools.iter().all(|tool| inventory.count_of(*tool) > 0) {
+            return false;
+        }
+        self.cost
+            .iter()
+            .all(|&(kind, count)| inventory.count_of(kind) >= count)
+    }
+
+    /// Крафт напрямую из инвентаря, без сетки 3×3. Используется ИИ.
+    /// Возвращает false, если не хватает ингредиентов/инструментов или
+    /// результат не помещается даже после расхода ингредиентов.
+    pub fn try_craft_from_inventory(&self, inventory: &mut Inventory) -> bool {
+        if !self.can_craft_from_inventory(inventory) {
+            return false;
+        }
+
+        let mut probe = *inventory;
+        for &(kind, count) in &self.cost {
+            if !probe.take_items(kind, count) {
+                return false;
+            }
+        }
+        if probe.add(self.result.kind, self.result.count) != 0 {
+            return false;
+        }
+
+        for &(kind, count) in &self.cost {
+            let _ = inventory.take_items(kind, count);
+        }
+        let _ = inventory.add(self.result.kind, self.result.count);
+        true
     }
 
     /// Снимает ингредиенты с сетки после успешного крафта. Для формы —
@@ -788,6 +846,8 @@ struct RawRecipe {
     input: Option<RawStack>,
     #[serde(default)]
     tools: Vec<String>,
+    #[serde(default)]
+    knowledge: Vec<String>,
     result: RawStack,
 }
 
@@ -888,6 +948,16 @@ pub fn parse_recipe(json: &str) -> Result<CraftRecipe, String> {
     };
     let cost = build_cost(&body);
 
+    let mut seen_knowledge = std::collections::HashSet::new();
+    for id in &raw.knowledge {
+        if id.trim().is_empty() {
+            return Err("пустой id в knowledge".to_string());
+        }
+        if !seen_knowledge.insert(id.as_str()) {
+            return Err(format!("повтор знания в knowledge: {id}"));
+        }
+    }
+
     Ok(CraftRecipe {
         id: raw.id,
         parents,
@@ -895,6 +965,7 @@ pub fn parse_recipe(json: &str) -> Result<CraftRecipe, String> {
         result: ItemStack { kind: result_kind, count: raw.result.count },
         tools,
         cost,
+        knowledge: raw.knowledge,
     })
 }
 

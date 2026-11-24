@@ -681,6 +681,24 @@ pub fn build(world: &mut World, actor: u64, pos: TilePos, kind: BuildingKind) ->
         world.set_crop(pos, None);
     }
     world.set_object_with_container(pos, Some(WorldObject::building(kind)));
+    // Костёр основывает поселение; строитель сразу становится его жителем.
+    if kind == BuildingKind::Campfire {
+        let settlement = match world.settlements.at_center(pos) {
+            Some(existing) => existing.id,
+            None => world.settlements.create(pos),
+        };
+        if let Some(settlement) = world.settlements.get_mut(settlement) {
+            settlement.add_member(actor);
+        }
+        if let Some(m) = mind(world, actor) {
+            let known = m.knowledge;
+            if let Some(settlement) = world.settlements.get_mut(settlement) {
+                known.for_each(|index| {
+                    settlement.shared_knowledge.insert(index);
+                });
+            }
+        }
+    }
     true
 }
 
@@ -737,6 +755,20 @@ pub fn break_building(world: &mut World, actor: u64, pos: TilePos, tick: u64) ->
         world.item_entities.drop_stack(world.seed, center, stack, tick);
     }
     world.set_object_with_container(pos, None);
+    // Постройка могла быть центром/складом поселения.
+    if kind == BuildingKind::Campfire
+        && let Some(settlement) = world.settlements.at_center(pos)
+    {
+        let id = settlement.id;
+        world.settlements.remove(id);
+    }
+    if kind == BuildingKind::Storage {
+        for settlement in world.settlements.iter_mut() {
+            if settlement.storage == Some(pos) {
+                settlement.storage = None;
+            }
+        }
+    }
     true
 }
 

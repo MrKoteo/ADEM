@@ -11,11 +11,14 @@ use bevy::input::mouse::MouseWheel;
 use bevy::math::Rot2;
 use bevy::prelude::*;
 use bevy::ui::UiTransform;
+use bevy::ui_widgets::{Activate, Button};
 use serde::Deserialize;
 
-use crate::app::state::MenuKind;
+use crate::app::state::{ClockRes, CommandQueueRes, GameState, MenuKind};
+use crate::simulation::Command;
+use crate::simulation::time::{GAME_SECS_PER_TICK, SECS_PER_HOUR};
 use crate::ui::menu_bg::{self, MenuBgCache};
-use crate::ui::{style, BlocksWorldInput};
+use crate::ui::{style, set_text_if_neq, BlocksWorldInput};
 use crate::ui::UiFont;
 
 use super::social::{SOCIAL_ERA_COLUMNS, SocialData};
@@ -28,7 +31,7 @@ pub(crate) struct MenuRoot;
 
 /// Сторона карточки: ширина и высота (px холста, масштабируются зумом).
 pub(crate) const CARD_W: f32 = 240.0;
-const CARD_H: f32 = 110.0;
+const CARD_H: f32 = 124.0;
 /// Горизонтальный зазор между колонками и вертикальный между карточками.
 pub(crate) const GAP_X: f32 = 130.0;
 const GAP_Y: f32 = 44.0;
@@ -89,6 +92,18 @@ pub(crate) struct CardEra {
 #[derive(Component)]
 pub(crate) struct CardDesc {
     base: f32,
+}
+
+/// Карточка знания: id для интерактивного изучения.
+#[derive(Component)]
+pub(crate) struct KnowledgeCard {
+    id: String,
+}
+
+/// Строка состояния карточки: изучено / изучается / доступно / закрыто.
+#[derive(Component)]
+pub(crate) struct KnowledgeStatus {
+    id: String,
 }
 
 /// Вид дерева: сдвиг (экранные px) и зум. Живёт только пока дерево открыто.
@@ -236,6 +251,7 @@ struct TreeEntry {
     era: String,
     requires: Vec<String>,
     description: String,
+    study_hours: f32,
 }
 
 /// Раскладка холста: позиции карточек (левый верхний угол), рёбра и
@@ -417,6 +433,7 @@ pub(crate) fn spawn_tree(
                     era: t.era.clone(),
                     requires: t.requires.clone(),
                     description: t.description.clone(),
+                    study_hours: t.study_hours,
                 })
                 .collect::<Vec<_>>(),
         ),
@@ -431,6 +448,7 @@ pub(crate) fn spawn_tree(
                     era: s.era.clone(),
                     requires: s.requires.clone(),
                     description: s.description.clone(),
+                    study_hours: s.study_hours,
                 })
                 .collect::<Vec<_>>(),
         ),
@@ -543,7 +561,7 @@ pub(crate) fn spawn_tree(
                 },
             ));
             root.spawn((
-                Text::new("ПКМ — панорама, Esc — закрыть"),
+                Text::new("ЛКМ по карточке — изучать, ПКМ — панорама, Esc — закрыть"),
                 TextFont {
                     font: font.0.clone().into(),
                     font_size: 13.0.into(),
@@ -657,6 +675,10 @@ fn spawn_card(
             },
             BackgroundColor(Color::srgba(0.16, 0.17, 0.20, 0.95)),
             BorderColor::all(style::border()),
+            Button,
+            KnowledgeCard {
+                id: entry.id.clone(),
+            },
             CanvasNode {
                 base: top_left,
                 size: Vec2::new(CARD_W, CARD_H),
@@ -674,7 +696,11 @@ fn spawn_card(
                 CardTitle { base: 17.0 },
             ));
             card.spawn((
-                Text::new(era_label(&entry.era)),
+                Text::new(format!(
+                    "{} · {} ч",
+                    era_label(&entry.era),
+                    entry.study_hours.max(0.0)
+                )),
                 TextFont {
                     font: font.0.clone().into(),
                     font_size: 12.0.into(),
@@ -682,6 +708,19 @@ fn spawn_card(
                 },
                 TextColor(style::text_dim()),
                 CardEra { base: 12.0 },
+            ));
+            card.spawn((
+                Text::new(""),
+                TextFont {
+                    font: font.0.clone().into(),
+                    font_size: 12.0.into(),
+                    ..default()
+                },
+                TextColor(style::text_dim()),
+                CardDesc { base: 12.0 },
+                KnowledgeStatus {
+                    id: entry.id.clone(),
+                },
             ));
             if !entry.description.is_empty() {
                 card.spawn((
@@ -825,6 +864,109 @@ pub(crate) fn pan_zoom_tree(
             if *vis != want {
                 *vis = want;
             }
+        }
+    }
+}
+
+/// Клик по карточке ставит выбранное знание в изучение управляемому
+/// человеку. Проверки (изучено/предпосылки) — в симуляции.
+pub(crate) fn on_knowledge_card_activated(
+    activate: On<Activate>,
+    cards: Query<&KnowledgeCard>,
+    state: Res<GameState>,
+    mut queue: ResMut<CommandQueueRes>,
+) {
+    let Ok(card) = cards.get(activate.entity) else {
+        return;
+    };
+    let Some(world) = state.world.as_ref() else {
+        return;
+    };
+    let Some(id) = state.controlled else {
+        return;
+    };
+    let Some(knowledge) = world.knowledge.index_of(&card.id) else {
+        return;
+    };
+    queue.0.push(Command::Study { id, knowledge });
+}
+
+/// Проценты/статусы карточек знаний поверх дерева. Обновляются только при
+/// открытом меню и только при изменении текста/цвета.
+pub(crate) fn refresh_knowledge_cards(
+    state: Res<GameState>,
+    clock: Res<ClockRes>,
+    mut cards: Query<(&KnowledgeCard, &mut BackgroundColor, &mut BorderColor)>,
+    mut statuses: Query<(&KnowledgeStatus, &mut Text, &mut TextColor)>,
+) {
+    let Some(world) = state.world.as_ref() else {
+        return;
+    };
+    let mind = state.controlled_mind();
+    let tick = clock.0.tick;
+
+    for (card, mut background, mut border) in &mut cards {
+        let Some(index) = world.knowledge.index_of(&card.id) else {
+            continue;
+        };
+        let (want_bg, want_border) = match mind {
+            None => (
+                Color::srgba(0.11, 0.12, 0.14, 0.95),
+                Color::srgba(0.30, 0.32, 0.36, 1.0),
+            ),
+            Some(mind) if mind.knowledge.has(index) => (
+                Color::srgba(0.14, 0.24, 0.16, 0.95),
+                Color::srgba(0.35, 0.65, 0.40, 1.0),
+            ),
+            Some(mind) if mind.studying == Some(index) => (
+                Color::srgba(0.14, 0.20, 0.30, 0.95),
+                Color::srgba(0.36, 0.60, 0.90, 1.0),
+            ),
+            Some(mind) if world.knowledge.requirements_met(index, &mind.knowledge) => (
+                Color::srgba(0.16, 0.17, 0.20, 0.95),
+                Color::srgba(0.52, 0.57, 0.70, 1.0),
+            ),
+            Some(_) => (
+                Color::srgba(0.11, 0.12, 0.14, 0.95),
+                Color::srgba(0.30, 0.32, 0.36, 1.0),
+            ),
+        };
+        if background.0 != want_bg {
+            background.0 = want_bg;
+        }
+        let want_border = BorderColor::all(want_border);
+        if *border != want_border {
+            *border = want_border;
+        }
+    }
+
+    for (status, text, mut color) in &mut statuses {
+        let Some(index) = world.knowledge.index_of(&status.id) else {
+            continue;
+        };
+        let (want_text, want_color) = match mind {
+            None => ("нет управляемого человека".to_string(), style::text_dim()),
+            Some(mind) if mind.knowledge.has(index) => {
+                ("изучено".to_string(), Color::srgb(0.55, 0.82, 0.58))
+            }
+            Some(mind) if mind.studying == Some(index) => {
+                let hours = mind
+                    .study_finish_tick
+                    .saturating_sub(tick)
+                    .saturating_mul(GAME_SECS_PER_TICK as u64) as f32 / SECS_PER_HOUR as f32;
+                (
+                    format!("изучается · осталось ~{hours:.1} ч"),
+                    Color::srgb(0.55, 0.72, 0.95),
+                )
+            }
+            Some(mind) if world.knowledge.requirements_met(index, &mind.knowledge) => {
+                ("доступно · нажмите, чтобы изучать".to_string(), style::text())
+            }
+            Some(_) => ("нужны предпосылки".to_string(), style::text_dim()),
+        };
+        set_text_if_neq(text, &want_text);
+        if color.0 != want_color {
+            color.0 = want_color;
         }
     }
 }

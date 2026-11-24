@@ -173,9 +173,8 @@ pub fn capacity(kind: ObjectKind) -> Option<usize> {
         BuildingKind::BlastFurnace => Some(7),
         BuildingKind::Barrel => Some(BARREL_SLOTS),
         BuildingKind::Storage => Some(STORAGE_SLOTS),
-        // Верстак и кузнечный стол контейнера не имеют: их сетка
-        // временная и живёт в UI.
-        BuildingKind::CraftingTable | BuildingKind::SmithingTable => None,
+        // Мастерская и кузнечный стол контейнера не имеют: их сетка временная и живёт в UI.
+        BuildingKind::Workshop | BuildingKind::SmithingTable => None,
     }
 }
 

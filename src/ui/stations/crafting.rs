@@ -27,7 +27,7 @@ pub fn station_categories(kind: ObjectKind) -> &'static [CrafterKind] {
         return &[];
     };
     match kind {
-        BuildingKind::CraftingTable => CrafterKind::CraftingTable.recipe_chain(),
+        BuildingKind::Workshop => CrafterKind::Workshop.recipe_chain(),
         BuildingKind::SmithingTable => CrafterKind::SmithingTable.recipe_chain(),
         _ => &[],
     }
@@ -264,7 +264,11 @@ pub(crate) fn on_station_result_activated(
     let Some(kind) = station.kind else {
         return;
     };
-    let Some(p) = state.controlled_mind_mut() else {
+    let Some(p) = state.controlled_mind() else {
+        return;
+    };
+    let known = p.knowledge;
+    let Some(world) = state.world.as_ref() else {
         return;
     };
     let held_tools: Vec<ItemKind> = station.tools.iter().flatten().map(|s| s.kind).collect();
@@ -273,6 +277,12 @@ pub(crate) fn on_station_result_activated(
         .matching_recipe_for(station_categories(kind), &station.grid, &held_tools)
         .cloned()
     else {
+        return;
+    };
+    if !recipe.knowledge_satisfied(&known, &world.knowledge) {
+        return;
+    }
+    let Some(p) = state.controlled_mind_mut() else {
         return;
     };
     if keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]) {

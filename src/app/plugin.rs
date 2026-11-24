@@ -242,6 +242,13 @@ fn tick_world(
             world.tick_projectiles(tick);
             // Дроп-сущности: автоподбор людьми и исчезновение по возрасту.
             world.tick_item_entities(tick);
+            // Новые «фоновые» изучения, поставленные ИИ на этом тике.
+            // Планировщик нельзя менять внутри run_tick, поэтому копим
+            // заявки в переиспользуемом буфере мира.
+            let requests = std::mem::take(&mut world.ai_scratch.study_requests);
+            for (due, entity, knowledge) in requests {
+                sched.0.schedule_at(due, TaskKind::Study { entity, knowledge });
+            }
         }
     }
 
@@ -307,7 +314,18 @@ fn tick_world(
                     *local_index,
                 );
             }
+            TaskKind::Study { entity, knowledge } => {
+                let Some(world) = state.world.as_mut() else {
+                    continue;
+                };
+                world.complete_study(*entity, *knowledge);
+            }
             _ => {}
+        }
+    }
+    if let Some(world) = state.world.as_mut() {
+        for pos in world.render_dirty.drain(..) {
+            dirty.decor(pos);
         }
     }
     state.dirty_tiles = dirty;
@@ -359,6 +377,11 @@ pub(crate) fn apply_commands(
             clock.0.tick,
             &book.0,
         );
+    }
+    if let Some(world) = state.world.as_mut() {
+        for pos in world.render_dirty.drain(..) {
+            dirty.decor(pos);
+        }
     }
     state.dirty_tiles = dirty;
 }

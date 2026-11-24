@@ -9,7 +9,7 @@
 //! `Command::EntityDropItem` на землю под существом. Мир мутрует только
 //! применение команд: окно лишь читает состояние и ставит команды.
 //!
-//! Неразумное существо (волк) — только полоса HP; секций инвентаря нет.
+//! Неразумное существо (волк) — секций инвентаря нет.
 //! Окно живёт в режиме наблюдателя; при захвате существа по F1 оно
 //! закрывается (у захваченного есть обычный UI игрока).
 
@@ -17,7 +17,7 @@ use bevy::input::mouse::MouseButton;
 use bevy::picking::hover::Hovered;
 use bevy::picking::Pickable;
 use bevy::prelude::*;
-use bevy::ui_widgets::Button;
+use bevy::ui_widgets::{Activate, Button};
 
 use crate::app::state::{CommandQueueRes, EditorSelection, GameMode, GameState};
 use crate::simulation::armor::{ARMOR_RATING_MAX, rating as armor_rating};
@@ -36,7 +36,9 @@ pub struct InspectorPlugin;
 
 impl Plugin for InspectorPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<InspectorUi>().add_systems(
+        app.init_resource::<InspectorUi>()
+            .add_observer(on_role_activated)
+            .add_systems(
             Update,
             (
                 sync_inspector_window,
@@ -100,6 +102,20 @@ enum BarValue {
     Hunger,
     Armor,
 }
+
+/// Кнопка смены социальной роли в инспекторе.
+#[derive(Component)]
+struct InspectorRoleButton {
+    id: u64,
+}
+
+/// Текст текущей роли (обновляется без пересоздания окна).
+#[derive(Component)]
+struct InspectorRoleText;
+
+/// Строка «изучено / изучает».
+#[derive(Component)]
+struct InspectorKnowledgeText;
 
 /// Синхронизирует окно с выделением ввода: открытие/переключение сущности
 /// пересобирает окно, закрытие (ESC, повторный клик, смена режима,
@@ -234,6 +250,45 @@ fn spawn_inspector_window(commands: &mut Commands, entity: &SimEntity, font: &Ui
                         },
                         TextColor(style::text_dim()),
                     ));
+                    if let Some(mind) = entity.mind.as_ref() {
+                        panel
+                            .spawn((
+                                Button,
+                                Node {
+                                    padding: UiRect::axes(Val::Px(8.0), Val::Px(4.0)),
+                                    border: UiRect::all(Val::Px(1.0)),
+                                    ..default()
+                                },
+                                BackgroundColor(style::surface()),
+                                BorderColor::all(style::border()),
+                                InspectorRoleButton { id: entity.id },
+                            ))
+                            .with_children(|button| {
+                                button.spawn((
+                                    Text::new(format!(
+                                        "роль: {} (нажмите, чтобы сменить)",
+                                        mind.social_role.label()
+                                    )),
+                                    TextFont {
+                                        font: font.0.clone().into(),
+                                        font_size: 13.0.into(),
+                                        ..default()
+                                    },
+                                    TextColor(style::text()),
+                                    InspectorRoleText,
+                                ));
+                            });
+                        panel.spawn((
+                            Text::new("изучено: …"),
+                            TextFont {
+                                font: font.0.clone().into(),
+                                font_size: 12.0.into(),
+                                ..default()
+                            },
+                            TextColor(style::text_dim()),
+                            InspectorKnowledgeText,
+                        ));
+                    }
                     // Полосы: HP всегда, голод — у всех (волк тоже голодает),
                     // броня — только у разумных.
                     spawn_bar(
@@ -521,6 +576,8 @@ fn refresh_inspector(
     mut slots: Query<(Entity, &InspectorSlot, &mut BorderColor, &Children)>,
     mut images: Query<&mut ImageNode>,
     mut texts: Query<&mut Text>,
+    role_texts: Query<Entity, With<InspectorRoleText>>,
+    knowledge_texts: Query<Entity, With<InspectorKnowledgeText>>,
 ) {
     let Some(id) = inspector.open else {
         return;
@@ -578,4 +635,61 @@ fn refresh_inspector(
             }
         }
     }
+
+    let Some(mind) = entity.mind.as_ref() else {
+        return;
+    };
+    let want_role = format!(
+        "роль: {} (нажмите, чтобы сменить)",
+        mind.social_role.label()
+    );
+    for entity in &role_texts {
+        if let Ok(text) = texts.get_mut(entity) {
+            set_text_if_neq(text, &want_role);
+        }
+    }
+
+    let world = state.world.as_ref().expect("мир проверен выше");
+    let mut want_knowledge = format!(
+        "изучено: {}/{}",
+        mind.knowledge.count(),
+        world.knowledge.len()
+    );
+    if let Some(index) = mind.studying
+        && let Some(info) = world.knowledge.get(index)
+    {
+        want_knowledge.push_str(&format!(" · изучает: {}", info.name));
+    }
+    for entity in &knowledge_texts {
+        if let Ok(text) = texts.get_mut(entity) {
+            set_text_if_neq(text, &want_knowledge);
+        }
+    }
+}
+
+/// Клик по кнопке роли циклически меняет её через команду симуляции.
+fn on_role_activated(
+    activate: On<Activate>,
+    buttons: Query<&InspectorRoleButton>,
+    state: Res<GameState>,
+    mut queue: ResMut<CommandQueueRes>,
+) {
+    let Ok(button) = buttons.get(activate.entity) else {
+        return;
+    };
+    let Some(world) = state.world.as_ref() else {
+        return;
+    };
+    let Some(current) = world
+        .entities
+        .get(button.id)
+        .and_then(|entity| entity.mind.as_ref())
+        .map(|mind| mind.social_role)
+    else {
+        return;
+    };
+    queue.0.push(Command::SetRole {
+        id: button.id,
+        role: current.next(),
+    });
 }

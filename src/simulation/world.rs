@@ -6,12 +6,16 @@ use super::chunk::{Chunk, ResourceDeposit, TerrainTiles, CHUNK_SIZE};
 use super::climate::{build_climate_maps, ClimateMap, MoistureMap};
 use super::combat::{Projectile, StuckSpear};
 use super::containers::Container;
+use super::crafts::CraftBook;
 use super::crops::Crop;
 use super::entities::{EntityStore, FaunaScratch, LandSearchScratch};
 use super::heightmap::SEA_LEVEL;
 use super::item_entity::{ItemEntities, ItemEntity, ItemScratch};
 use super::items::ItemStack;
-use super::objects::WorldObject;
+use super::knowledge::KnowledgeCatalog;
+use super::objects::{ObjectKind, WorldObject};
+use super::settlement::Settlements;
+use super::spatial_index::ObjectIndex;
 #[allow(unused_imports)]
 use super::tile::{ResourceKind, Tile, TileType};
 
@@ -38,12 +42,10 @@ impl WorldSize {
         let side = side - side % CHUNK_SIZE as u32;
         Self { side }
     }
-
     /// Сторона мира в тайлах.
     pub fn tiles(self) -> u32 {
         self.side
     }
-
     /// Подпись для UI.
     pub fn label(self) -> String {
         format!("{}×{}", self.side, self.side)
@@ -138,6 +140,20 @@ pub struct World {
     pub(crate) land_scratch: LandSearchScratch,
     /// Переиспользуемые буферы поиска едоков у дропа.
     pub(crate) item_scratch: ItemScratch,
+    /// Статичные карточки технологий/SI. Не сохраняется: данные читаются
+    /// из `data/` при старте игры и после загрузки сейва.
+    pub knowledge: KnowledgeCatalog,
+    /// Книга рецептов нужна ИИ для крафта. Не сохраняется.
+    pub craft_book: CraftBook,
+    /// Поселения вокруг костров (сохраняются).
+    pub settlements: Settlements,
+    /// Разреженный индекс объектов: поиск ресурсов/построек по ячейкам
+    /// вместо полного скана радиуса. Не сохраняется, перестраивается после
+    /// генерации и загрузки.
+    pub(crate) object_index: ObjectIndex,
+    /// Тайлы, где симуляция изменила объект (ИИ построил/сломал).
+    /// Transient: app переносит их в `DirtyTiles::decor`.
+    pub render_dirty: Vec<TilePos>,
 }
 
 /// Накопленный прогресс ломания постройки (simulation/actions.rs).
@@ -175,6 +191,9 @@ pub(crate) struct AiScratch {
     pub(crate) positions: Vec<(u64, WorldPos)>,
     pub(crate) provoked: Vec<u64>,
     pub(crate) killed: Vec<u64>,
+    /// Заявки на завершение изучения: (тик, entity, индекс знания).
+    /// Заполняются ИИ и разбираются app-слоем после тика существ.
+    pub(crate) study_requests: Vec<(u64, u64, u16)>,
 }
 
 impl World {
@@ -216,6 +235,7 @@ impl World {
         bytes += (self.item_entities.len() as u64) * size_of::<ItemEntity>();
         bytes += map_bytes::<TilePos, BuildingBreak>(self.building_breaks.len());
         bytes += map_bytes::<TilePos, TreeChop>(self.tree_chops.len());
+        bytes += self.settlements.memory_bytes();
         bytes += self.climate.memory_bytes();
         bytes += self.moisture.memory_bytes();
         bytes
@@ -246,7 +266,23 @@ impl World {
             ai_scratch: AiScratch::default(),
             land_scratch: LandSearchScratch::default(),
             item_scratch: ItemScratch::default(),
+            knowledge: KnowledgeCatalog::empty(),
+            craft_book: CraftBook::default(),
+            settlements: Settlements::default(),
+            object_index: ObjectIndex::default(),
+            render_dirty: Vec::new(),
         }
+    }
+
+    /// Загружает статичные данные, которые не входят в сейв: карточки знаний 
+    /// и книгу рецептов. Вызывается app-слоем после генерации или загрузки мира.
+    pub fn load_static_data(&mut self) {
+        self.knowledge = KnowledgeCatalog::load_default();
+        let loaded = CraftBook::load_dir("data/crafts");
+        for error in &loaded.errors {
+            eprintln!("crafts: {error}");
+        }
+        self.craft_book = loaded.book;
     }
 
     /// Ссылка на чанк по его позиции.
@@ -352,16 +388,63 @@ impl World {
     /// Ставит объект на тайл или убирает его (один объект на тайл:
     /// повторная запись перезаписывает).
     pub fn set_object(&mut self, pos: TilePos, obj: Option<WorldObject>) {
+        let old = self.object_at(pos).copied();
+        if old == obj {
+            return;
+        }
+        if let Some(old) = old {
+            self.object_index.remove(pos, old.kind);
+        }
         let (cpos, idx) = split_tile_pos(pos);
-        let chunk = self.chunk_mut(cpos);
-        match obj {
-            Some(obj) => {
-                chunk.objects.insert(idx, obj);
-            }
-            None => {
-                chunk.objects.remove(&idx);
+        let mut inserted = None;
+        {
+            let chunk = self.chunk_mut(cpos);
+            match obj {
+                Some(obj) => {
+                    chunk.objects.insert(idx, obj);
+                    inserted = Some(obj.kind);
+                }
+                None => {
+                    chunk.objects.remove(&idx);
+                }
             }
         }
+        if let Some(kind) = inserted {
+            self.object_index.insert(pos, kind);
+        }
+        // Любое изменение объекта (сбор куста/камня, рост, постройка,
+        // снос) должно обновить декор и точечный свет. Раньше это делали
+        // только команды игрока, из-за чего ИИ-сбор не обновлял картинку.
+        self.render_dirty.push(pos);
+    }
+
+    /// Перестраивает индекс объектов одним проходом по чанкам. Нужен после
+    /// генерации (она пишет слои напрямую) и после загрузки сейва.
+    pub fn rebuild_object_index(&mut self) {
+        self.object_index.clear();
+        let cps = self.chunks_per_side;
+        for cy in 0..cps {
+            for cx in 0..cps {
+                let chunk = &self.chunks[(cy * cps + cx) as usize];
+                for (&idx, obj) in chunk.objects.iter() {
+                    let pos = super::world::tile_pos(ChunkPos { x: cx, y: cy }, idx);
+                    self.object_index.insert(pos, obj.kind);
+                }
+            }
+        }
+    }
+
+    /// Ближайший объект указанного вида в радиусе (тайлы).
+    pub(crate) fn nearest_object(
+        &self,
+        center: TilePos,
+        radius: i32,
+        kind: ObjectKind,
+        mut accept: impl FnMut(TilePos) -> bool,
+    ) -> Option<TilePos> {
+        self.object_index.nearest(center, radius, kind, |pos| {
+            self.object_at(pos).is_some_and(|obj| obj.kind == kind) && accept(pos)
+        })
     }
 
     /// Объект на тайле, если есть.

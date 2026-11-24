@@ -41,7 +41,7 @@ pub enum BuildingKind {
     /// Костёр (строится игроком, пока горит вечно).
     Campfire,
     /// Рабочая станция: верстак (сетка 3×3, крафты manual + свои).
-    CraftingTable,
+    Workshop,
     /// Рабочая станция: печь (готовка на топливе, 100 тиков).
     Furnace,
     /// Рабочая станция: бочка (24 слота хранения).
@@ -122,7 +122,7 @@ impl BuildingKind {
     /// Все постройки в стабильном порядке (меню строительства, редактор).
     pub const ALL: [BuildingKind; 7] = [
         BuildingKind::Campfire,
-        BuildingKind::CraftingTable,
+        BuildingKind::Workshop,
         BuildingKind::Furnace,
         BuildingKind::Barrel,
         BuildingKind::BlastFurnace,
@@ -136,7 +136,7 @@ impl BuildingKind {
     pub fn is_station(self) -> bool {
         match self {
             BuildingKind::Campfire
-            | BuildingKind::CraftingTable
+            | BuildingKind::Workshop
             | BuildingKind::Furnace
             | BuildingKind::Barrel
             | BuildingKind::BlastFurnace
@@ -149,7 +149,7 @@ impl BuildingKind {
     pub fn from_discriminant(value: u8) -> Option<Self> {
         match value {
             0 => Some(Self::Campfire),
-            1 => Some(Self::CraftingTable),
+            1 => Some(Self::Workshop),
             2 => Some(Self::Furnace),
             3 => Some(Self::Barrel),
             4 => Some(Self::BlastFurnace),
@@ -282,6 +282,8 @@ impl WorldObject {
 pub fn build_cost(kind: BuildingKind) -> Option<(ItemKind, u32)> {
     match kind {
         BuildingKind::Campfire => Some((ItemKind::Stick, 16)),
+        // Склад доступен ИИ-строителю и игроку: 32 палки.
+        BuildingKind::Storage => Some((ItemKind::Stick, 32)),
         // Крафтов рабочих станций пока нет: строятся редактором, в меню
         // строительства не показываются (цена не задана).
         _ => None,

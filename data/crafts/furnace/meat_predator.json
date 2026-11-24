@@ -1,6 +1,9 @@
 {
   "id": "meat_predator_cooked",
   "parent": ["furnace", "campfire"],
+  "knowledge": [
+    "fire_control"
+  ],
   "input": { "item": "meat_predator_raw", "count": 1 },
   "result": { "item": "meat_predator_cooked", "count": 1 }
 }

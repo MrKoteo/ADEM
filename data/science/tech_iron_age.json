@@ -4,6 +4,7 @@
       "id": "iron_smelting",
       "name": "Выплавка железа",
       "era": "iron_age",
+      "study_hours": 20.0,
       "requires": [
         "wheel"
       ],
@@ -13,6 +14,7 @@
       "id": "blacksmithing",
       "name": "Кузнечное дело",
       "era": "iron_age",
+      "study_hours": 21.5,
       "requires": [
         "iron_smelting"
       ],
@@ -22,6 +24,7 @@
       "id": "quench_hardening",
       "name": "Закалка стали",
       "era": "iron_age",
+      "study_hours": 23.0,
       "requires": [
         "blacksmithing"
       ],
@@ -31,6 +34,7 @@
       "id": "coinage",
       "name": "Монетная чеканка",
       "era": "iron_age",
+      "study_hours": 24.5,
       "requires": [
         "quench_hardening"
       ],
@@ -40,6 +44,7 @@
       "id": "water_mill",
       "name": "Водяная мельница",
       "era": "iron_age",
+      "study_hours": 26.0,
       "requires": [
         "coinage"
       ],
@@ -49,6 +54,7 @@
       "id": "iron_armor",
       "name": "Железные доспехи",
       "era": "iron_age",
+      "study_hours": 27.5,
       "requires": [
         "water_mill"
       ],
@@ -58,6 +64,7 @@
       "id": "glassmaking",
       "name": "Стеклоделие",
       "era": "iron_age",
+      "study_hours": 29.0,
       "requires": [
         "iron_armor"
       ],
@@ -67,33 +74,17 @@
       "id": "siege_engines",
       "name": "Осадные машины",
       "era": "iron_age",
+      "study_hours": 30.5,
       "requires": [
         "glassmaking"
       ],
       "description": "Катапульты и тараны ломают стены городов."
     },
     {
-      "id": "aqueducts",
-      "name": "Акведуки",
-      "era": "iron_age",
-      "requires": [
-        "siege_engines"
-      ],
-      "description": "Мосты из арок несут воду через долины в города."
-    },
-    {
-      "id": "heavy_plow",
-      "name": "Тяжёлый плуг",
-      "era": "iron_age",
-      "requires": [
-        "aqueducts"
-      ],
-      "description": "Железный лемех поднимает плотные почвы севера."
-    },
-    {
       "id": "pattern_welding",
       "name": "Сварка узорной стали",
       "era": "iron_age",
+      "study_hours": 32.0,
       "requires": [
         "quench_hardening"
       ],
@@ -103,6 +94,7 @@
       "id": "stirrup",
       "name": "Стремя",
       "era": "iron_age",
+      "study_hours": 33.5,
       "requires": [
         "iron_armor"
       ],
@@ -112,19 +104,11 @@
       "id": "glass_blowing",
       "name": "Выдувание стекла",
       "era": "iron_age",
+      "study_hours": 35.0,
       "requires": [
         "glassmaking"
       ],
       "description": "Стекло перестаёт быть роскошью для немногих."
-    },
-    {
-      "id": "arch_bridge",
-      "name": "Арочный мост",
-      "era": "iron_age",
-      "requires": [
-        "aqueducts"
-      ],
-      "description": "Каменный свод держит вес — переправы через ущелья."
     }
   ]
 }

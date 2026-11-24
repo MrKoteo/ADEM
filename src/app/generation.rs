@@ -224,6 +224,8 @@ pub(crate) fn poll_world_generation(
         Ok(generated) => {
             let mut world = generated.world;
             world.ambient_temperature_c = climate::ambient_temperature_c(clock.0.tick);
+            // Статичные карточки знаний и книга рецептов не входят в сейв.
+            world.load_static_data();
             state.world = Some(world);
             state.world_size = generated.params.size;
             state.seed = generated.params.seed;

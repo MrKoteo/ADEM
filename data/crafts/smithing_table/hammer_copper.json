@@ -1,6 +1,9 @@
 {
   "id": "hammer_copper",
   "parent": "smithing_table",
+  "knowledge": [
+    "copper_smelting"
+  ],
   "ingredients": {
     "0": "ingot_copper",
     "1": "stick"

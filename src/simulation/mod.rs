@@ -9,6 +9,7 @@ pub mod climate;
 pub mod combat;
 pub mod commands;
 pub mod containers;
+pub mod craft_planner;
 pub mod crafts;
 pub mod crops;
 pub mod dirty;
@@ -18,6 +19,7 @@ pub mod heightmap;
 pub mod hunger;
 pub mod item_entity;
 pub mod items;
+pub mod knowledge;
 pub mod movement;
 pub mod moon;
 mod noise;
@@ -26,7 +28,9 @@ pub mod objects;
 pub mod rng;
 pub mod save;
 pub mod scheduler;
+pub mod settlement;
 pub mod spatial;
+pub mod spatial_index;
 pub mod tile;
 pub mod time;
 pub mod vegetation;
@@ -66,7 +70,9 @@ pub use crops::{Crop, CropKind, CROP_KIND_COUNT, MAX_CROP_STAGES};
 #[allow(unused_imports)]
 pub use dirty::DirtyTiles;
 #[allow(unused_imports)]
-pub use entities::{EntityKind, EntityStore, EntityState, Facing, Gender, HumanGoal, HumanMind, SimEntity};
+pub use entities::{EntityKind, EntityStore, EntityState, Facing, Gender, HumanGoal, HumanMind, SimEntity, SocialRole};
+#[allow(unused_imports)]
+pub use knowledge::{KnowledgeCatalog, KnowledgeInfo, KnowledgeKind, KnowledgeSet, MAX_KNOWLEDGE};
 #[allow(unused_imports)]
 pub use hunger::{Activity, Hunger, EAT_COOLDOWN_TICKS, HUNGER_MAX};
 #[allow(unused_imports)]
@@ -82,6 +88,8 @@ pub use actions::{INTERACT_REACH};
 pub use world::WorldPos;
 #[allow(unused_imports)]
 pub use scheduler::{Scheduler, Task, TaskId, TaskKind};
+#[allow(unused_imports)]
+pub use settlement::{SETTLEMENT_RADIUS_TILES, Settlement, Settlements};
 #[allow(unused_imports)]
 pub use tile::{ResourceKind, Tile, TileType};
 #[allow(unused_imports)]

@@ -4,8 +4,9 @@
       "id": "masonry",
       "name": "Каменная кладка",
       "era": "medieval",
+      "study_hours": 32.0,
       "requires": [
-        "heavy_plow"
+        "basic_building"
       ],
       "description": "Известковый раствор и арки: дома и крепости на века."
     },
@@ -13,6 +14,7 @@
       "id": "three_field_system",
       "name": "Трёхполье",
       "era": "medieval",
+      "study_hours": 33.5,
       "requires": [
         "masonry"
       ],
@@ -22,6 +24,7 @@
       "id": "windmills",
       "name": "Ветряная мельница",
       "era": "medieval",
+      "study_hours": 35.0,
       "requires": [
         "three_field_system"
       ],
@@ -31,6 +34,7 @@
       "id": "mechanical_clocks",
       "name": "Механические часы",
       "era": "medieval",
+      "study_hours": 36.5,
       "requires": [
         "windmills"
       ],
@@ -40,6 +44,7 @@
       "id": "compass",
       "name": "Компас",
       "era": "medieval",
+      "study_hours": 38.0,
       "requires": [
         "mechanical_clocks"
       ],
@@ -49,26 +54,19 @@
       "id": "keel_ships",
       "name": "Килевое судостроение",
       "era": "medieval",
+      "study_hours": 39.5,
       "requires": [
         "compass"
       ],
       "description": "Киль и паруса делают морские переходы дальними."
     },
     {
-      "id": "universities",
-      "name": "Университеты",
-      "era": "medieval",
-      "requires": [
-        "keel_ships"
-      ],
-      "description": "Корпорации учёных: знания передаются поколениями."
-    },
-    {
       "id": "optics",
-      "name": "Стеклянная оптика",
+      "name": "Оптика",
       "era": "medieval",
+      "study_hours": 41.0,
       "requires": [
-        "universities"
+        "glassmaking"
       ],
       "description": "Очки и линзы возвращают зрение ремесленникам и книжникам."
     },
@@ -76,6 +74,7 @@
       "id": "gunpowder",
       "name": "Порох",
       "era": "medieval",
+      "study_hours": 42.5,
       "requires": [
         "optics"
       ],
@@ -85,6 +84,7 @@
       "id": "printing_press",
       "name": "Книгопечатание",
       "era": "medieval",
+      "study_hours": 44.0,
       "requires": [
         "gunpowder"
       ],
@@ -94,6 +94,7 @@
       "id": "horse_harness",
       "name": "Конская упряжь",
       "era": "medieval",
+      "study_hours": 45.5,
       "requires": [
         "three_field_system"
       ],
@@ -103,24 +104,17 @@
       "id": "blast_furnace",
       "name": "Доменная печь",
       "era": "medieval",
+      "study_hours": 47.0,
       "requires": [
         "masonry"
       ],
       "description": "Непрерывная плавка даёт чугун в промышленных объёмах."
     },
     {
-      "id": "spectacles",
-      "name": "Очки",
-      "era": "medieval",
-      "requires": [
-        "optics"
-      ],
-      "description": "Шлифованное стекло возвращает зрение старикам."
-    },
-    {
       "id": "plate_armor",
       "name": "Латы",
       "era": "medieval",
+      "study_hours": 48.5,
       "requires": [
         "gunpowder"
       ],

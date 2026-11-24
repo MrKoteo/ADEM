@@ -4,6 +4,7 @@
       "id": "codified_law",
       "name": "Записанные законы",
       "era": "iron_age",
+      "study_hours": 25.0,
       "requires": [
         "monument_building"
       ],
@@ -13,6 +14,7 @@
       "id": "city_state",
       "name": "Города-государства",
       "era": "iron_age",
+      "study_hours": 26.5,
       "requires": [
         "codified_law"
       ],
@@ -22,6 +24,7 @@
       "id": "citizenship",
       "name": "Гражданство",
       "era": "iron_age",
+      "study_hours": 28.0,
       "requires": [
         "city_state"
       ],
@@ -31,6 +34,7 @@
       "id": "philosophy",
       "name": "Философия",
       "era": "iron_age",
+      "study_hours": 29.5,
       "requires": [
         "citizenship"
       ],
@@ -40,6 +44,7 @@
       "id": "organized_religion",
       "name": "Организованная религия",
       "era": "iron_age",
+      "study_hours": 31.0,
       "requires": [
         "philosophy"
       ],
@@ -49,6 +54,7 @@
       "id": "professional_army",
       "name": "Профессиональная армия",
       "era": "iron_age",
+      "study_hours": 32.5,
       "requires": [
         "organized_religion"
       ],
@@ -58,6 +64,7 @@
       "id": "diplomacy",
       "name": "Дипломатия",
       "era": "iron_age",
+      "study_hours": 34.0,
       "requires": [
         "professional_army"
       ],
@@ -67,6 +74,7 @@
       "id": "market_customs",
       "name": "Рыночные порядки",
       "era": "iron_age",
+      "study_hours": 35.5,
       "requires": [
         "diplomacy"
       ],
@@ -76,15 +84,17 @@
       "id": "colonies",
       "name": "Заморские колонии",
       "era": "iron_age",
+      "study_hours": 37.0,
       "requires": [
         "city_state"
       ],
-      "description": "Лишние руки основывают города на чужих берегах."
+      "description": "Лишние руки строят города на чужих берегах."
     },
     {
       "id": "democracy",
       "name": "Народное собрание",
       "era": "iron_age",
+      "study_hours": 38.5,
       "requires": [
         "citizenship"
       ],
@@ -94,10 +104,11 @@
       "id": "mercenaries",
       "name": "Наёмники",
       "era": "iron_age",
+      "study_hours": 40.0,
       "requires": [
         "professional_army"
       ],
-      "description": "Чужой меч за плату — война становится ремеслом."
+      "description": "Чужой меч за плату — и война становится ремеслом."
     }
   ]
 }

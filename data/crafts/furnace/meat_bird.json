@@ -1,6 +1,9 @@
 {
   "id": "meat_bird_cooked",
   "parent": ["furnace", "campfire"],
+  "knowledge": [
+    "fire_control"
+  ],
   "input": { "item": "meat_bird_raw", "count": 1 },
   "result": { "item": "meat_bird_cooked", "count": 1 }
 }

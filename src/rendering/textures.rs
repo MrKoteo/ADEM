@@ -989,7 +989,7 @@ fn texture_path(key: TextureKey) -> String {
             ObjectKind::CherryBush => "textures/objects/cherry_bush.png",
             ObjectKind::Building(kind) => match kind {
                 BuildingKind::Campfire => "textures/buildings/campfire_cross.png",
-                BuildingKind::CraftingTable => "textures/buildings/crafting_table_side.png",
+                BuildingKind::Workshop => "textures/buildings/workshop.png",
                 BuildingKind::Furnace => "textures/buildings/furnace_front.png",
                 BuildingKind::Barrel => "textures/buildings/barrel_side.png",
                 BuildingKind::BlastFurnace => "textures/buildings/blast_furnace_front.png",

@@ -61,6 +61,16 @@ fn save_roundtrip_world() {
         pitch: 0.7,
     });
 
+    // Поселение — отдельная сущность с жителями, складом и общими знаниями.
+    let settlement = world.settlements.create(TilePos { x: 40, y: 41 });
+    {
+        let saved = world.settlements.get_mut(settlement).unwrap();
+        saved.storage = Some(TilePos { x: 42, y: 41 });
+        saved.add_member(2);
+        saved.add_member(7);
+        saved.shared_knowledge.insert(3);
+    }
+
     let clock = GameClock { tick: 123_456 };
     let mut scheduler = crate::simulation::Scheduler::default();
     scheduler.run_tick(clock.tick, |_| {});
@@ -77,6 +87,12 @@ fn save_roundtrip_world() {
     assert_eq!(loaded.world.chunks, world.chunks);
     assert_eq!(loaded.world.ambient_temperature_c, world.ambient_temperature_c);
     assert_eq!(loaded.world.entities, world.entities, "существа должны пережить файл");
+    assert_eq!(loaded.world.settlements.len(), 1);
+    let loaded_settlement = loaded.world.settlements.iter().next().unwrap();
+    assert_eq!(loaded_settlement.center, TilePos { x: 40, y: 41 });
+    assert_eq!(loaded_settlement.storage, Some(TilePos { x: 42, y: 41 }));
+    assert_eq!(loaded_settlement.members, vec![2, 7]);
+    assert!(loaded_settlement.shared_knowledge.has(3));
     assert_eq!(loaded.world.projectiles, world.projectiles, "снаряды должны пережить файл");
     assert_eq!(
         loaded.world.stuck_spears, world.stuck_spears,

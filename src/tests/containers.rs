@@ -11,6 +11,7 @@ use crate::simulation::crafts::CraftBook;
 use crate::simulation::dirty::DirtyTiles;
 use crate::simulation::entities::EntityKind;
 use crate::simulation::items::{ItemKind, ItemStack};
+use crate::simulation::knowledge::KnowledgeCatalog;
 use crate::simulation::objects::{BuildingKind, ObjectKind, WorldObject};
 use crate::simulation::scheduler::TaskKind;
 use crate::simulation::world::{TilePos, World, WorldPos, WorldSize};
@@ -149,13 +150,64 @@ fn campfire_cooks_without_fuel() {
 }
 
 #[test]
+fn campfire_requires_fire_control_knowledge() {
+    let (mut world, book) = furnace_world(BuildingKind::Campfire);
+    world.knowledge = KnowledgeCatalog::load_default();
+    let pos = TilePos { x: 10, y: 10 };
+    let human = spawn_human_nearby(&mut world);
+    mind_mut(&mut world, human)
+        .inventory
+        .add(ItemKind::MeatHerbivoreRaw, 1);
+
+    let mut sched = crate::simulation::Scheduler::default();
+    let mut queue = crate::simulation::CommandQueue::default();
+    let mut dirty = DirtyTiles::default();
+    queue.push(Command::StationMoveItem {
+        pos,
+        from: (SLOT_AREA_PLAYER_MISC, 0),
+        to: (CAMPFIRE_INPUT as u8, 0),
+        count: 0,
+    });
+    queue.apply_all(&mut world, Some(human), &mut dirty, &mut sched, 0, &book);
+    assert_eq!(container_at(&world, pos).unwrap().get(CAMPFIRE_INPUT), None);
+    assert_eq!(
+        mind_mut(&mut world, human)
+            .inventory
+            .count_of(ItemKind::MeatHerbivoreRaw),
+        1
+    );
+
+    let fire_control = world
+        .knowledge
+        .index_of("fire_control")
+        .expect("fire_control есть в данных");
+    mind_mut(&mut world, human)
+        .knowledge
+        .insert(fire_control);
+    queue.push(Command::StationMoveItem {
+        pos,
+        from: (SLOT_AREA_PLAYER_MISC, 0),
+        to: (CAMPFIRE_INPUT as u8, 0),
+        count: 0,
+    });
+    queue.apply_all(&mut world, Some(human), &mut dirty, &mut sched, 0, &book);
+    assert_eq!(
+        container_at(&world, pos).unwrap().get(CAMPFIRE_INPUT),
+        Some(ItemStack {
+            kind: ItemKind::MeatHerbivoreRaw,
+            count: 1
+        })
+    );
+}
+
+#[test]
 fn container_rules_and_capacities() {
     // Ёмкости по видам; верстак и кузнечный стол контейнера не имеют.
     assert_eq!(capacity(ObjectKind::Building(BuildingKind::Furnace)), Some(5));
     assert_eq!(capacity(ObjectKind::Building(BuildingKind::BlastFurnace)), Some(7));
     assert_eq!(capacity(ObjectKind::Building(BuildingKind::Barrel)), Some(containers::BARREL_SLOTS));
     assert_eq!(capacity(ObjectKind::Building(BuildingKind::Storage)), Some(containers::STORAGE_SLOTS));
-    assert_eq!(capacity(ObjectKind::Building(BuildingKind::CraftingTable)), None);
+    assert_eq!(capacity(ObjectKind::Building(BuildingKind::Workshop)), None);
     assert_eq!(capacity(ObjectKind::Building(BuildingKind::SmithingTable)), None);
 
     // Печь: вход принимает всё, топливо — только горючее.

@@ -23,13 +23,16 @@ pub(crate) struct TechEntry {
     pub(crate) requires: Vec<String>,
     #[serde(default)]
     pub(crate) description: String,
+    /// Базовое расчётное время изучения, игровых часов.
+    #[serde(default)]
+    pub(crate) study_hours: f32,
 }
 
 /// Сколько колонок (последовательных карточек) занимает каждая эпоха в
 /// дереве технологий — порядок эпох: каменный, бронзовый, железный век,
 /// средневековье. Разделители рисуются после каждой границы, кроме
 /// последней. Значение правится вместе с данными `data/science/`.
-pub(crate) const TECH_ERA_COLUMNS: [usize; 4] = [10, 10, 10, 10];
+pub(crate) const TECH_ERA_COLUMNS: [usize; 4] = [14, 14, 11, 12];
 
 /// Загружает все файлы технологий эпохи и сливает их в один набор.
 pub(crate) fn load_tech_dir(dir: &str) -> TechData {

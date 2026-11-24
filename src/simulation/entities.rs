@@ -13,7 +13,9 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use super::chunk::Chunk;
 use super::hunger::{Activity, Hunger};
-use super::items::Inventory;
+use super::items::{Inventory, ItemKind};
+use super::knowledge::KnowledgeSet;
+use super::objects::BuildingKind;
 use super::movement;
 use super::rng::{SplitMix64, mix_seed};
 use super::spatial::SpatialGrid;
@@ -227,6 +229,60 @@ impl Gender {
     }
 }
 
+/// Социальная роль. Если роль не назначена вручную, человек сам выбирает
+/// подходящее занятие (автономный запасной вариант).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[repr(u8)]
+pub enum SocialRole {
+    #[default]
+    Unassigned = 0,
+    Hunter = 1,
+    Gatherer = 2,
+    Builder = 3,
+    Farmer = 4,
+    Cook = 5,
+}
+
+impl SocialRole {
+    pub const ALL: [SocialRole; 6] = [
+        SocialRole::Unassigned,
+        SocialRole::Hunter,
+        SocialRole::Gatherer,
+        SocialRole::Builder,
+        SocialRole::Farmer,
+        SocialRole::Cook,
+    ];
+
+    pub fn from_discriminant(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(SocialRole::Unassigned),
+            1 => Some(SocialRole::Hunter),
+            2 => Some(SocialRole::Gatherer),
+            3 => Some(SocialRole::Builder),
+            4 => Some(SocialRole::Farmer),
+            5 => Some(SocialRole::Cook),
+            _ => None,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SocialRole::Unassigned => "не назначена",
+            SocialRole::Hunter => "охотник",
+            SocialRole::Gatherer => "собиратель",
+            SocialRole::Builder => "строитель",
+            SocialRole::Farmer => "фермер",
+            SocialRole::Cook => "повар",
+        }
+    }
+
+    /// Следующая роль для клика в инспекторе.
+    pub fn next(self) -> Self {
+        let index = self as usize;
+        Self::ALL[(index + 1) % Self::ALL.len()]
+    }
+}
+
 /// «Ум» разумного существа: то, что делает человека человеком —
 /// инвентарь и кулдауны действий. Живёт в `SimEntity.mind` только у
 /// разумных видов (волк — `None`), поэтому неразумные существа не платят
@@ -263,6 +319,23 @@ pub struct HumanMind {
     /// Разрежает дорогие сканы объектов: между обдумываниями ИИ только
     /// исполняет текущую цель. Transient: в сейв не пишется.
     pub next_think_tick: u64,
+    /// Личный набор изученных технологий и социальных институтов.
+    pub knowledge: KnowledgeSet,
+    /// Социальная роль, назначенная в инспекторе (или выбранная автономно).
+    pub social_role: SocialRole,
+    /// Индекс знания, которое человек изучает прямо сейчас.
+    pub studying: Option<u16>,
+    /// Тик, на котором текущее изучение завершится. Transient для UI,
+    /// в сейв пишется вместе с `studying`, чтобы таймер не терялся.
+    pub study_finish_tick: u64,
+    /// Запомненный склад поселения.
+    pub known_storage: Option<TilePos>,
+    /// Тик, с которого можно снова поделиться знанием.
+    pub share_ready_tick: u64,
+    /// Что готовится на костре: предмет и количество. Transient.
+    pub cooking: Option<(ItemKind, u32)>,
+    /// Тик готовности текущего блюда. Transient.
+    pub cook_finish_tick: u64,
 }
 
 /// Цель автономного поведения человека (ИИ выживания, simulation/ai.rs).
@@ -277,8 +350,18 @@ pub enum HumanGoal {
     Food(TilePos),
     /// Охота: догнать животное и убить (мясо подберётся с земли).
     Hunt(u64),
-    /// Сбор ресурсов с куста (палки): дойти и облупить куст.
+    /// Сбор ресурсов: куст, камень, трава или другое интерактивное место.
     Gather(TilePos),
+    /// Отнести добычу/еду на склад.
+    Deposit(TilePos),
+    /// Взять готовую еду со склада.
+    TakeFood(TilePos),
+    /// Приготовить еду на костре.
+    Cook(TilePos),
+    /// Построить здание в указанной точке.
+    Build(TilePos, BuildingKind),
+    /// Фермерское дело: вспахать/посеять/собрать урожай.
+    Farm(TilePos),
 }
 
 impl HumanMind {
@@ -293,6 +376,14 @@ impl HumanMind {
             known_campfire: None,
             known_food: None,
             next_think_tick: 0,
+            knowledge: KnowledgeSet::new(),
+            social_role: SocialRole::Unassigned,
+            studying: None,
+            study_finish_tick: 0,
+            known_storage: None,
+            share_ready_tick: 0,
+            cooking: None,
+            cook_finish_tick: 0,
         }
     }
 

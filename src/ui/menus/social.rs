@@ -23,11 +23,14 @@ pub(crate) struct SocialEntry {
     pub(crate) requires: Vec<String>,
     #[serde(default)]
     pub(crate) description: String,
+    /// Базовое расчётное время изучения, игровых часов.
+    #[serde(default)]
+    pub(crate) study_hours: f32,
 }
 
 /// То же раскладочное правило эпох, что у технологий, для дерева
 /// социальных институтов (`data/culture/`).
-pub(crate) const SOCIAL_ERA_COLUMNS: [usize; 4] = [8, 8, 8, 8];
+pub(crate) const SOCIAL_ERA_COLUMNS: [usize; 4] = [11, 11, 11, 11];
 
 /// Загружает все файлы институтов эпохи и сливает их в один набор.
 pub(crate) fn load_social_dir(dir: &str) -> SocialData {

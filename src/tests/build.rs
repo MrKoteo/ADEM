@@ -96,6 +96,19 @@ fn build_deducts_cost_and_places_campfire() {
     assert_eq!(count_of(&world, actor, ItemKind::Stick), 4);
 }
 
+#[test]
+fn build_storage_costs_32_sticks() {
+    let (mut world, actor, pos) = setup();
+    mind_mut(&mut world, actor).inventory.add(ItemKind::Stick, 40);
+
+    let mut queue = CommandQueue::default();
+    queue.push(Command::PlayerBuild { pos, kind: BuildingKind::Storage });
+    apply(&mut queue, &mut world, actor);
+
+    assert_eq!(world.object_at(pos), Some(&WorldObject::building(BuildingKind::Storage)));
+    assert_eq!(count_of(&world, actor, ItemKind::Stick), 8);
+}
+
 /// Без нужного количества предметов постройка не появляется и плата не тратится.
 #[test]
 fn build_requires_enough_items() {

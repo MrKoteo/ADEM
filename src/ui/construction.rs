@@ -300,7 +300,7 @@ fn spawn_entry(
 pub(crate) fn building_name(kind: BuildingKind) -> &'static str {
     match kind {
         BuildingKind::Campfire => "Костёр",
-        BuildingKind::CraftingTable => "Верстак",
+        BuildingKind::Workshop => "Мастерская",
         BuildingKind::Furnace => "Печь",
         BuildingKind::Barrel => "Бочка",
         BuildingKind::BlastFurnace => "Плавильная печь",

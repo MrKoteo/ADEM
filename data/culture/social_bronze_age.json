@@ -4,6 +4,7 @@
       "id": "chieftaindom",
       "name": "Вождество",
       "era": "bronze_age",
+      "study_hours": 15.0,
       "requires": [
         "trade_customs"
       ],
@@ -13,6 +14,7 @@
       "id": "clan_law",
       "name": "Родовое право",
       "era": "bronze_age",
+      "study_hours": 16.5,
       "requires": [
         "chieftaindom"
       ],
@@ -22,6 +24,7 @@
       "id": "polytheism",
       "name": "Пантеон богов",
       "era": "bronze_age",
+      "study_hours": 18.0,
       "requires": [
         "clan_law"
       ],
@@ -31,6 +34,7 @@
       "id": "division_of_labor",
       "name": "Разделение труда",
       "era": "bronze_age",
+      "study_hours": 19.5,
       "requires": [
         "polytheism"
       ],
@@ -40,6 +44,7 @@
       "id": "tribute_system",
       "name": "Дань и подати",
       "era": "bronze_age",
+      "study_hours": 21.0,
       "requires": [
         "division_of_labor"
       ],
@@ -49,6 +54,7 @@
       "id": "wealth_classes",
       "name": "Имущественные сословия",
       "era": "bronze_age",
+      "study_hours": 22.5,
       "requires": [
         "tribute_system"
       ],
@@ -58,6 +64,7 @@
       "id": "scribe_tradition",
       "name": "Традиция писцов",
       "era": "bronze_age",
+      "study_hours": 24.0,
       "requires": [
         "wealth_classes"
       ],
@@ -67,6 +74,7 @@
       "id": "monument_building",
       "name": "Монументальное строительство",
       "era": "bronze_age",
+      "study_hours": 25.5,
       "requires": [
         "scribe_tradition"
       ],
@@ -76,6 +84,7 @@
       "id": "hereditary_rule",
       "name": "Наследственная власть",
       "era": "bronze_age",
+      "study_hours": 27.0,
       "requires": [
         "chieftaindom"
       ],
@@ -85,6 +94,7 @@
       "id": "priesthood",
       "name": "Жречество",
       "era": "bronze_age",
+      "study_hours": 28.5,
       "requires": [
         "polytheism"
       ],
@@ -94,6 +104,7 @@
       "id": "slavery",
       "name": "Рабство",
       "era": "bronze_age",
+      "study_hours": 30.0,
       "requires": [
         "tribute_system"
       ],

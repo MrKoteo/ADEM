@@ -1,6 +1,9 @@
 {
   "id": "bow",
   "parent": "manual",
+  "knowledge": [
+    "simple_hunting"
+  ],
   "ingredients": {
     "0": "cordage",
     "1": "stick"

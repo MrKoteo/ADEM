@@ -14,8 +14,9 @@ use crate::simulation::items::{
 use crate::simulation::needs::NeedKind;
 use crate::simulation::objects::{ObjectKind, ObjectStage, WorldObject};
 use crate::simulation::scheduler::{Scheduler, SchedulerSnapshot, Task, TaskKind};
+use crate::simulation::settlement::{Settlement, Settlements};
 use crate::simulation::tile::{ResourceKind, TileType};
-use crate::simulation::world::{ChunkPos, World, WorldPos};
+use crate::simulation::world::{ChunkPos, TilePos, World, WorldPos};
 use super::validate::{validate_container_layer, validate_scheduler_tick, validate_world_size};
 use super::{SaveError, SaveHeader, SavedGame, MAGIC, SAVE_FORMAT_VERSION};
 
@@ -110,6 +111,9 @@ pub fn load_game(bytes: &[u8]) -> Result<SavedGame, SaveError> {
     // Существа.
     let entities = read_entities(&mut r)?;
 
+    // Поселения.
+    let settlements = read_settlements(&mut r, size.tiles())?;
+
     // Снаряды и воткнутые копья.
     let next_projectile_id = r.read_u64()?;
     let projectiles_len = r.read_u32()?;
@@ -183,32 +187,40 @@ pub fn load_game(bytes: &[u8]) -> Result<SavedGame, SaveError> {
     });
     let (climate, moisture) = build_climate_maps(size.tiles(), seed);
 
+    let mut world = World {
+        size,
+        seed,
+        chunks_per_side,
+        chunks,
+        entities,
+        ambient_temperature_c: ambient,
+        climate,
+        moisture,
+        projectiles,
+        stuck_spears,
+        next_projectile_id,
+        item_entities,
+        // Прогресс ломания и рубки — транзиент: после загрузки зажатие
+        // начинать заново.
+        building_breaks: std::collections::HashMap::new(),
+        tree_chops: std::collections::HashMap::new(),
+        fauna_scratch: Default::default(),
+        entity_scratch: Default::default(),
+        ai_scratch: Default::default(),
+        land_scratch: Default::default(),
+        item_scratch: Default::default(),
+        // Статичные данные подгружает app-слой после загрузки мира.
+        knowledge: Default::default(),
+        craft_book: Default::default(),
+        settlements,
+        object_index: Default::default(),
+        render_dirty: Vec::new(),
+    };
+    world.rebuild_object_index();
     Ok(SavedGame {
         seed,
         tick,
-        world: World {
-            size,
-            seed,
-            chunks_per_side,
-            chunks,
-            entities,
-            ambient_temperature_c: ambient,
-            climate,
-            moisture,
-            projectiles,
-            stuck_spears,
-            next_projectile_id,
-            item_entities,
-            // Прогресс ломания и рубки — транзиент: после загрузки зажатие
-            // начинать заново.
-            building_breaks: std::collections::HashMap::new(),
-            tree_chops: std::collections::HashMap::new(),
-            fauna_scratch: Default::default(),
-            entity_scratch: Default::default(),
-            ai_scratch: Default::default(),
-            land_scratch: Default::default(),
-            item_scratch: Default::default(),
-        },
+        world,
         scheduler,
     })
 }
@@ -309,6 +321,66 @@ fn read_entities(r: &mut Reader<'_>) -> Result<EntityStore, SaveError> {
     Ok(EntityStore::from_entities(entities, next_id))
 }
 
+/// Читает поселения. id возрастают, центр и склад — внутри мира,
+/// жители отсортированы и уникальны.
+fn read_settlements(r: &mut Reader<'_>, side: u32) -> Result<Settlements, SaveError> {
+    let count = r.read_u32()?;
+    if count > 1_000_000 {
+        return Err(SaveError::BadData("слишком много поселений"));
+    }
+    let mut settlements = Settlements::default();
+    let mut previous_id = 0_u64;
+    for _ in 0..count {
+        let id = r.read_u64()?;
+        if id == 0 || id <= previous_id {
+            return Err(SaveError::BadData("id поселения"));
+        }
+        previous_id = id;
+        let center = TilePos {
+            x: r.read_u32()? as i32,
+            y: r.read_u32()? as i32,
+        };
+        if center.x < 0 || center.y < 0 || center.x >= side as i32 || center.y >= side as i32 {
+            return Err(SaveError::BadData("центр поселения вне мира"));
+        }
+        let storage = if r.read_u8()? == 0 {
+            None
+        } else {
+            let tile = TilePos {
+                x: r.read_u32()? as i32,
+                y: r.read_u32()? as i32,
+            };
+            if tile.x < 0 || tile.y < 0 || tile.x >= side as i32 || tile.y >= side as i32 {
+                return Err(SaveError::BadData("склад поселения вне мира"));
+            }
+            Some(tile)
+        };
+        let mut words = [0u64; crate::simulation::knowledge::MAX_KNOWLEDGE / 64];
+        for word in &mut words {
+            *word = r.read_u64()?;
+        }
+        let members_len = r.read_u32()?;
+        if members_len > 1_000_000 {
+            return Err(SaveError::BadData("слишком много жителей поселения"));
+        }
+        let mut settlement = Settlement::new(id, center);
+        settlement.storage = storage;
+        settlement.shared_knowledge =
+            crate::simulation::knowledge::KnowledgeSet::from_raw(words);
+        let mut previous_member = 0_u64;
+        for _ in 0..members_len {
+            let member = r.read_u64()?;
+            if member == 0 || member <= previous_member {
+                return Err(SaveError::BadData("житель поселения"));
+            }
+            previous_member = member;
+            settlement.members.push(member);
+        }
+        settlements.insert_loaded(settlement);
+    }
+    Ok(settlements)
+}
+
 /// Читает одно существо; порядок полей совпадает с `write_entities`.
 fn read_entity(r: &mut Reader<'_>) -> Result<SimEntity, SaveError> {
     let id = r.read_u64()?;
@@ -407,6 +479,33 @@ fn read_mind(r: &mut Reader<'_>) -> Result<Option<HumanMind>, SaveError> {
     let mut trash = [None; 1];
     read_slots(r, SlotArea::Trash, 1, &mut trash)?;
     mind.inventory.trash = trash[0];
+
+    let mut words = [0u64; crate::simulation::knowledge::MAX_KNOWLEDGE / 64];
+    for word in &mut words {
+        *word = r.read_u64()?;
+    }
+    mind.knowledge = crate::simulation::knowledge::KnowledgeSet::from_raw(words);
+    mind.social_role = crate::simulation::entities::SocialRole::from_discriminant(r.read_u8()?)
+        .ok_or(SaveError::BadData("неизвестная социальная роль"))?;
+    let studying = r.read_u16()?;
+    let study_finish_tick = r.read_u64()?;
+    if studying == u16::MAX {
+        mind.studying = None;
+        mind.study_finish_tick = 0;
+    } else {
+        if studying as usize >= crate::simulation::knowledge::MAX_KNOWLEDGE {
+            return Err(SaveError::BadData("некорректный индекс знания"));
+        }
+        mind.studying = Some(studying);
+        mind.study_finish_tick = study_finish_tick;
+    }
+    mind.known_storage = if r.read_u8()? == 0 {
+        None
+    } else {
+        let x = r.read_u32()? as i32;
+        let y = r.read_u32()? as i32;
+        Some(crate::simulation::TilePos { x, y })
+    };
     Ok(Some(mind))
 }
 
@@ -669,6 +768,11 @@ fn read_task_kind(r: &mut Reader<'_>, chunks_per_side: u32) -> Result<TaskKind, 
         10 => {
             let (chunk, local_index) = read_chunk_task(r, chunks_per_side)?;
             TaskKind::FarmlandRevert { chunk, local_index }
+        }
+        11 => {
+            let entity = r.read_u64()?;
+            let knowledge = r.read_u16()?;
+            TaskKind::Study { entity, knowledge }
         }
         _ => return Err(SaveError::BadData("вид задачи")),
     })

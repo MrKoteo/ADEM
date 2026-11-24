@@ -4,6 +4,7 @@
       "id": "feudalism",
       "name": "Феодализм",
       "era": "medieval",
+      "study_hours": 40.0,
       "requires": [
         "market_customs"
       ],
@@ -13,6 +14,7 @@
       "id": "manorialism",
       "name": "Вотчинное хозяйство",
       "era": "medieval",
+      "study_hours": 41.5,
       "requires": [
         "feudalism"
       ],
@@ -22,6 +24,7 @@
       "id": "chivalry",
       "name": "Рыцарский кодекс",
       "era": "medieval",
+      "study_hours": 43.0,
       "requires": [
         "manorialism"
       ],
@@ -31,6 +34,7 @@
       "id": "monasticism",
       "name": "Монашество",
       "era": "medieval",
+      "study_hours": 44.5,
       "requires": [
         "chivalry"
       ],
@@ -40,6 +44,7 @@
       "id": "craft_guilds",
       "name": "Ремесленные цеха",
       "era": "medieval",
+      "study_hours": 46.0,
       "requires": [
         "monasticism"
       ],
@@ -49,6 +54,7 @@
       "id": "common_law",
       "name": "Общее право",
       "era": "medieval",
+      "study_hours": 47.5,
       "requires": [
         "craft_guilds"
       ],
@@ -58,15 +64,17 @@
       "id": "merchant_leagues",
       "name": "Купеческие лиги",
       "era": "medieval",
+      "study_hours": 49.0,
       "requires": [
         "common_law"
       ],
-      "description": "Города объединяются для защиты торговли на морях."
+      "description": "Города объединяются для защиты торговли."
     },
     {
       "id": "estates_assembly",
       "name": "Сословные собрания",
       "era": "medieval",
+      "study_hours": 50.5,
       "requires": [
         "merchant_leagues"
       ],
@@ -76,6 +84,7 @@
       "id": "tournaments",
       "name": "Турниры",
       "era": "medieval",
+      "study_hours": 52.0,
       "requires": [
         "chivalry"
       ],
@@ -85,6 +94,7 @@
       "id": "pilgrimages",
       "name": "Паломничество",
       "era": "medieval",
+      "study_hours": 53.5,
       "requires": [
         "monasticism"
       ],
@@ -94,6 +104,7 @@
       "id": "town_charters",
       "name": "Городские хартии",
       "era": "medieval",
+      "study_hours": 55.0,
       "requires": [
         "craft_guilds"
       ],

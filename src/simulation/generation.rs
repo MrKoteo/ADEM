@@ -170,6 +170,8 @@ pub fn generate_world_cancellable(
             );
         }
     }
+    // Чанки писались напрямую — индекс объектов строится после генерации.
+    world.rebuild_object_index();
     progress(1.0);
 
     Some(world)

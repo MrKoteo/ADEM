@@ -164,7 +164,7 @@ fn spawn_station_window(commands: &mut Commands, station: &StationUi, font: &UiF
                         })
                         .with_children(|column| {
                             match kind {
-                                ObjectKind::Building(BuildingKind::CraftingTable) => {
+                                ObjectKind::Building(BuildingKind::Workshop) => {
                                     super::crafting::spawn_station_crafting(column, font);
                                 }
                                 ObjectKind::Building(BuildingKind::SmithingTable) => {
@@ -197,7 +197,7 @@ fn station_title(kind: ObjectKind) -> &'static str {
     };
     match kind {
         BuildingKind::Campfire => "Костёр",
-        BuildingKind::CraftingTable => "Верстак",
+        BuildingKind::Workshop => "Мастерская",
         BuildingKind::Furnace => "Печь",
         BuildingKind::Barrel => "Бочка",
         BuildingKind::BlastFurnace => "Плавильная печь",

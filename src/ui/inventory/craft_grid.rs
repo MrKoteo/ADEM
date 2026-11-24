@@ -407,10 +407,17 @@ pub(crate) fn on_result_activated(
     if !left_click && !right_click {
         return;
     }
-    let Some(p) = state.controlled_mind_mut() else {
+    let Some(recipe) = book.0.matching_recipe(&craft.slots).cloned() else {
         return;
     };
-    let Some(recipe) = book.0.matching_recipe(&craft.slots).cloned() else {
+    let known = state.controlled_mind().map(|m| m.knowledge);
+    let Some(world) = state.world.as_ref() else {
+        return;
+    };
+    if !known.is_some_and(|known| recipe.knowledge_satisfied(&known, &world.knowledge)) {
+        return;
+    }
+    let Some(p) = state.controlled_mind_mut() else {
         return;
     };
     let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);

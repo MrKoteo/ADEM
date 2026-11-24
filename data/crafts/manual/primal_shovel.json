@@ -1,6 +1,9 @@
 {
   "id": "primal_shovel",
   "parent": "manual",
+  "knowledge": [
+    "stone_tools"
+  ],
   "ingredients": {
     "0": "rock",
     "1": "stick",

@@ -4,6 +4,7 @@
       "id": "copper_smelting",
       "name": "Выплавка меди",
       "era": "bronze_age",
+      "study_hours": 12.0,
       "requires": [
         "basic_building"
       ],
@@ -13,6 +14,7 @@
       "id": "bronze_alloying",
       "name": "Бронзолитейное дело",
       "era": "bronze_age",
+      "study_hours": 13.5,
       "requires": [
         "copper_smelting"
       ],
@@ -22,6 +24,7 @@
       "id": "deep_mining",
       "name": "Горное дело",
       "era": "bronze_age",
+      "study_hours": 15.0,
       "requires": [
         "bronze_alloying"
       ],
@@ -31,6 +34,7 @@
       "id": "ox_plow",
       "name": "Пашенное земледелие",
       "era": "bronze_age",
+      "study_hours": 16.5,
       "requires": [
         "deep_mining"
       ],
@@ -40,6 +44,7 @@
       "id": "irrigation",
       "name": "Ирригация",
       "era": "bronze_age",
+      "study_hours": 18.0,
       "requires": [
         "ox_plow"
       ],
@@ -49,6 +54,7 @@
       "id": "pottery_wheel",
       "name": "Гончарный круг",
       "era": "bronze_age",
+      "study_hours": 19.5,
       "requires": [
         "irrigation"
       ],
@@ -58,6 +64,7 @@
       "id": "loom",
       "name": "Ткацкий станок",
       "era": "bronze_age",
+      "study_hours": 21.0,
       "requires": [
         "pottery_wheel"
       ],
@@ -67,6 +74,7 @@
       "id": "pictograph_writing",
       "name": "Пиктографическая запись",
       "era": "bronze_age",
+      "study_hours": 22.5,
       "requires": [
         "loom"
       ],
@@ -76,6 +84,7 @@
       "id": "bronze_armor",
       "name": "Бронзовые доспехи",
       "era": "bronze_age",
+      "study_hours": 24.0,
       "requires": [
         "pictograph_writing"
       ],
@@ -85,6 +94,7 @@
       "id": "wheel",
       "name": "Колесо",
       "era": "bronze_age",
+      "study_hours": 25.5,
       "requires": [
         "bronze_armor"
       ],
@@ -94,6 +104,7 @@
       "id": "weights_measures",
       "name": "Меры и весы",
       "era": "bronze_age",
+      "study_hours": 27.0,
       "requires": [
         "bronze_alloying"
       ],
@@ -103,6 +114,7 @@
       "id": "lost_wax_casting",
       "name": "Литьё по восковой модели",
       "era": "bronze_age",
+      "study_hours": 28.5,
       "requires": [
         "bronze_alloying"
       ],
@@ -112,6 +124,7 @@
       "id": "water_lift",
       "name": "Водоподъёмное колесо",
       "era": "bronze_age",
+      "study_hours": 30.0,
       "requires": [
         "irrigation"
       ],
@@ -121,6 +134,7 @@
       "id": "beer_brewing",
       "name": "Варка пива",
       "era": "bronze_age",
+      "study_hours": 31.5,
       "requires": [
         "pottery_wheel"
       ],

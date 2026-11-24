@@ -8,6 +8,7 @@ use crate::simulation::entities::{EntityStore, HumanMind};
 use crate::simulation::items::{ItemStack, MISC_SLOTS};
 use crate::simulation::objects::WorldObject;
 use crate::simulation::scheduler::{Scheduler, TaskKind};
+use crate::simulation::settlement::Settlements;
 use crate::simulation::time::GameClock;
 use crate::simulation::world::World;
 use super::{MAGIC, SAVE_FORMAT_VERSION};
@@ -59,6 +60,9 @@ pub fn save_game(
 
     // Существа.
     write_entities(&mut w, &world.entities);
+
+    // Поселения: центр, склад, жители и общие знания.
+    write_settlements(&mut w, &world.settlements);
 
     // Снаряды и воткнутые копья (порядок в Vec стабилен — детерминизм).
     write_u64(&mut w, world.next_projectile_id);
@@ -204,6 +208,33 @@ fn write_entities(w: &mut Vec<u8>, store: &EntityStore) {
     }
 }
 
+/// Пишет поселения в порядке создания. Жители уже отсортированы.
+fn write_settlements(w: &mut Vec<u8>, settlements: &Settlements) {
+    debug_assert!(settlements.len() <= u32::MAX as usize);
+    write_u32(w, settlements.len() as u32);
+    for settlement in settlements.iter() {
+        write_u64(w, settlement.id);
+        write_u32(w, settlement.center.x as u32);
+        write_u32(w, settlement.center.y as u32);
+        match settlement.storage {
+            Some(tile) => {
+                w.push(1);
+                write_u32(w, tile.x as u32);
+                write_u32(w, tile.y as u32);
+            }
+            None => w.push(0),
+        }
+        for &word in settlement.shared_knowledge.raw() {
+            write_u64(w, word);
+        }
+        debug_assert!(settlement.members.len() <= u32::MAX as usize);
+        write_u32(w, settlement.members.len() as u32);
+        for &member in &settlement.members {
+            write_u64(w, member);
+        }
+    }
+}
+
 /// Пишет «ум» существа (инвентарь, слот хотбара). Кулдауны атаки/еды,
 /// цель ИИ и память (костёр/еда) не пишутся — transient: тики мира при
 /// загрузке могли уйти вперёд, человек сам выберет цель заново.
@@ -221,6 +252,28 @@ fn write_mind(w: &mut Vec<u8>, mind: Option<&HumanMind>) {
     write_slots(w, &m.inventory.clothes);
     write_slots(w, &m.inventory.baubles);
     write_slots(w, std::slice::from_ref(&m.inventory.trash));
+    for &word in m.knowledge.raw() {
+        write_u64(w, word);
+    }
+    w.push(m.social_role as u8);
+    match m.studying {
+        Some(index) => {
+            write_u16(w, index);
+            write_u64(w, m.study_finish_tick);
+        }
+        None => {
+            write_u16(w, u16::MAX);
+            write_u64(w, 0);
+        }
+    }
+    match m.known_storage {
+        Some(tile) => {
+            w.push(1);
+            write_u32(w, tile.x as u32);
+            write_u32(w, tile.y as u32);
+        }
+        None => w.push(0),
+    }
 }
 /// Пишет массив слотов: на каждый — тег пустоты или стек (вид + количество).
 fn write_slots(w: &mut Vec<u8>, slots: &[Option<ItemStack>]) {
@@ -352,6 +405,11 @@ fn write_task_kind(w: &mut Vec<u8>, kind: &TaskKind) {
             write_u32(w, chunk.x);
             write_u32(w, chunk.y);
             w.push(*local_index);
+        }
+        TaskKind::Study { entity, knowledge } => {
+            w.push(11);
+            write_u64(w, *entity);
+            write_u16(w, *knowledge);
         }
     }
 }

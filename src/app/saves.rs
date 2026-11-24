@@ -212,6 +212,8 @@ fn poll_save_task(
         .try_recv();
     match received {
         Ok((world, scheduler, slot, result)) => {
+            let mut world = world;
+            world.load_static_data();
             state.world = Some(world);
             sched.0 = scheduler;
             state.saving = false;
@@ -286,7 +288,9 @@ fn poll_load_task(
     match received {
         Ok((_slot, Ok(loaded))) => {
             let size = loaded.world.size;
-            state.world = Some(loaded.world);
+            let mut world = loaded.world;
+            world.load_static_data();
+            state.world = Some(world);
             state.world_size = size;
             state.seed = loaded.seed;
             clock.0 = GameClock { tick: loaded.tick };

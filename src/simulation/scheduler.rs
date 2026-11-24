@@ -52,6 +52,7 @@ pub enum TaskKind {
     FarmlandRevert { chunk: ChunkPos, local_index: u8 },
     /// Порог потребности достигнут; owner — id существа (появится вместе с существами).
     NeedThreshold { owner: u64, need: NeedKind },
+    Study { entity: u64, knowledge: u16 },
     /// Маркер для тестов планировщика.
     Marker(u32),
 }
@@ -127,6 +128,7 @@ impl Scheduler {
                     | TaskKind::StationTick { .. }
                     | TaskKind::FarmlandRevert { .. }
                     | TaskKind::NeedThreshold { .. }
+                    | TaskKind::Study { .. }
             )
         }
 

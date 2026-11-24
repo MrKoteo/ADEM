@@ -310,7 +310,7 @@ fn recipe_schema_mismatches_are_errors() {
     assert!(mixed_parents.contains("смешивает"));
 }
 
-/// Верстак наследует ручные рецепты, кузнечный стол — нет.
+/// Мастерская наследует ручные рецепты, кузнечный стол — нет.
 #[test]
 fn crafting_table_inherits_manual_but_smithing_does_not() {
     use crate::simulation::crafts::{CraftBook, CrafterKind, GRID_SLOTS};
@@ -325,12 +325,12 @@ fn crafting_table_inherits_manual_but_smithing_does_not() {
     grid[0] = Some(ItemStack { kind: ItemKind::Stick, count: 8 });
     assert!(
         book.matching_recipe_for(
-            CrafterKind::CraftingTable.recipe_chain(),
+            CrafterKind::Workshop.recipe_chain(),
             &grid,
             &[],
         )
         .is_some(),
-        "верстак должен видеть ручную связку палок"
+        "мастерская должена видеть ручную связку палок"
     );
     assert!(
         book.matching_recipe_for(

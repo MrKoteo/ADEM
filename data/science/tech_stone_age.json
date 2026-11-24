@@ -4,6 +4,7 @@
       "id": "stone_knapping",
       "name": "Расщепление камня",
       "era": "stone_age",
+      "study_hours": 6.0,
       "requires": [],
       "description": "Примитивная обработка камня: отщепы и острые края."
     },
@@ -11,6 +12,7 @@
       "id": "stone_tools",
       "name": "Каменные орудия",
       "era": "stone_age",
+      "study_hours": 7.5,
       "requires": [
         "stone_knapping"
       ],
@@ -20,6 +22,7 @@
       "id": "wood_working",
       "name": "Обработка дерева",
       "era": "stone_age",
+      "study_hours": 9.0,
       "requires": [
         "stone_tools"
       ],
@@ -29,6 +32,7 @@
       "id": "cordage",
       "name": "Плетение верёвок",
       "era": "stone_age",
+      "study_hours": 10.5,
       "requires": [
         "wood_working"
       ],
@@ -38,6 +42,7 @@
       "id": "fire_control",
       "name": "Контроль огня",
       "era": "stone_age",
+      "study_hours": 12.0,
       "requires": [
         "cordage"
       ],
@@ -47,6 +52,7 @@
       "id": "food_drying",
       "name": "Вяление и копчение",
       "era": "stone_age",
+      "study_hours": 13.5,
       "requires": [
         "fire_control"
       ],
@@ -56,6 +62,7 @@
       "id": "bone_working",
       "name": "Костяное дело",
       "era": "stone_age",
+      "study_hours": 15.0,
       "requires": [
         "food_drying"
       ],
@@ -65,6 +72,7 @@
       "id": "pottery",
       "name": "Гончарное дело",
       "era": "stone_age",
+      "study_hours": 16.5,
       "requires": [
         "bone_working"
       ],
@@ -74,6 +82,7 @@
       "id": "simple_hunting",
       "name": "Охота",
       "era": "stone_age",
+      "study_hours": 18.0,
       "requires": [
         "pottery"
       ],
@@ -83,6 +92,7 @@
       "id": "basic_building",
       "name": "Простое строительство",
       "era": "stone_age",
+      "study_hours": 19.5,
       "requires": [
         "simple_hunting"
       ],
@@ -92,6 +102,7 @@
       "id": "hide_processing",
       "name": "Обработка шкур",
       "era": "stone_age",
+      "study_hours": 21.0,
       "requires": [
         "stone_tools"
       ],
@@ -101,6 +112,7 @@
       "id": "basket_weaving",
       "name": "Плетение корзин",
       "era": "stone_age",
+      "study_hours": 22.5,
       "requires": [
         "cordage"
       ],
@@ -110,6 +122,7 @@
       "id": "net_fishing",
       "name": "Сети и рыболовство",
       "era": "stone_age",
+      "study_hours": 24.0,
       "requires": [
         "basket_weaving"
       ],
@@ -119,6 +132,7 @@
       "id": "sling",
       "name": "Праща",
       "era": "stone_age",
+      "study_hours": 25.5,
       "requires": [
         "simple_hunting"
       ],

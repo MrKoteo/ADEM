@@ -10,7 +10,7 @@ use super::containers;
 use super::crafts::CraftBook;
 use super::crops::CropKind;
 use super::dirty::DirtyTiles;
-use super::entities::{EntityKind, HumanMind};
+use super::entities::{EntityKind, HumanMind, SocialRole};
 use super::heightmap::{HEIGHT_MAX, SEA_LEVEL};
 use super::items::{ItemKind, SlotRef, ItemStack, MAX_STACK, MISC_SLOTS};
 use super::objects::{BuildingKind, WorldObject};
@@ -108,6 +108,10 @@ pub enum Command {
     /// Инструмент «бога» (окно инспектора): выбросить стек из слота
     /// существа на землю под ним (дроп-сущностью с разбросом).
     EntityDropItem { id: u64, from: SlotRef },
+    /// Назначить социальную роль человеку (инспектор/сценарий).
+    SetRole { id: u64, role: SocialRole },
+    /// Начать/сменить изучаемое знание человеку (интерактивное дерево).
+    Study { id: u64, knowledge: u16 },
 }
 
 /// Очередь команд FIFO. Применяется app-слоем каждый кадр; порядок
@@ -244,6 +248,7 @@ impl CommandQueue {
                     // Спрайт удалённого существа рендер убирает сам: он
                     // сверяет список живых существ с картой спрайтов.
                     world.entities.remove(id);
+                    world.settlements.remove_member_everywhere(id);
                 }
                 Command::MoveEntity { id, pos } => {
                     // Перетаскивание в редакторе: спрайт существа читает
@@ -256,8 +261,7 @@ impl CommandQueue {
                     // проверяет боевая система). Мимо существа — обычная
                     // добыча: оружие не мешает собирать траву и камни.
                     // Исключение — лук: им нельзя ничего ломать.
-                    let can_harvest =
-                        actions::selected_item(world, actor) != Some(ItemKind::Bow);
+                    let can_harvest = actions::selected_item(world, actor) != Some(ItemKind::Bow);
                     // Добыча меняет либо объект (куст, валун), либо рельеф
                     // (сбор травы иногда превращает тайл в землю) — но не
                     // оба сразу. Культура меняет только декор. Канал dirty
@@ -350,8 +354,7 @@ impl CommandQueue {
                     }
                     // Вид культуры берём из предмета в руке до посева:
                     // после списания слот может опустеть.
-                    let Some(crop_kind) =
-                        actions::selected_item(world, actor).and_then(CropKind::from_seed_item)
+                    let Some(crop_kind) = actions::selected_item(world, actor).and_then(CropKind::from_seed_item)
                     else {
                         continue;
                     };
@@ -376,7 +379,7 @@ impl CommandQueue {
                     if !in_bounds(world, pos) {
                         continue;
                     }
-                    if station_move_item(world, actor, pos, from, to, count) {
+                    if station_move_item(world, actor, pos, from, to, count, book) {
                         // Слоты изменились: декор (состояние печи) и поджиг.
                         dirty.decor(pos);
                         containers::wake_station(world, sched, tick, book, pos);
@@ -473,6 +476,16 @@ impl CommandQueue {
                     };
                     world.item_entities.drop_stack(world.seed, pos, stack, tick);
                 }
+                Command::SetRole { id, role } => {
+                    if let Some(m) = world.entities.get_mut(id).and_then(|e| e.mind.as_mut()) {
+                        m.social_role = role;
+                        // Смена роли — повод пересмотреть цель на ближайшем «обдумывании», а не мгновенно ломать текущую.
+                        m.next_think_tick = m.next_think_tick.min(tick);
+                    }
+                }
+                Command::Study { id, knowledge } => {
+                    world.start_study(id, knowledge, tick);
+                }
             }
             applied += 1;
         }
@@ -553,6 +566,7 @@ fn station_move_item(
     from: (u8, u8),
     to: (u8, u8),
     count: u8,
+    book: &CraftBook,
 ) -> bool {
     // Действия с misc возможны только у существа с «умом».
     let Some(actor) = actor else {
@@ -613,6 +627,18 @@ fn station_move_item(
     if !target_is_player {
         if !containers::can_put_into(kind, target_slot, moving.kind) {
             return false;
+        }
+        // Знание проверяется не только в сетке крафта, но и при загрузке
+        // ингредиента в поварскую станцию: иначе готовка обходила бы
+        // требование `knowledge`.
+        if target_slot == containers::CAMPFIRE_INPUT
+            && let Some(crafter) = containers::cooking_crafter(kind)
+            && let Some(recipe) = book.cooking_recipe(crafter, moving.kind)
+        {
+            let known = mind_of(world, actor).map(|m| m.knowledge).unwrap_or_default();
+            if !recipe.knowledge_satisfied(&known, &world.knowledge) {
+                return false;
+            }
         }
     } else if target_slot >= MISC_SLOTS {
         return false;

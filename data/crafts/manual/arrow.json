@@ -1,6 +1,9 @@
 {
   "id": "arrow",
   "parent": "manual",
+  "knowledge": [
+    "simple_hunting"
+  ],
   "shapeless": true,
   "ingredients": [
     { "item": "rock", "count": 1 },

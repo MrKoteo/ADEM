@@ -1,6 +1,9 @@
 {
   "id": "torch",
   "parent": "campfire",
+  "knowledge": [
+    "fire_control"
+  ],
   "input": { "item": "stick", "count": 1 },
   "result": { "item": "torch", "count": 1 }
 }

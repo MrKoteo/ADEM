@@ -28,7 +28,10 @@ use tech::{TechData, load_tech_dir};
 
 // Движок дерева. Часть имен видна соседям (creative.rs, menu_bg.rs,
 // pause_menu.rs используют MenuRoot через crate::ui::menus::MenuRoot).
-pub(crate) use tree_view::{MenuRoot, cleanup_tree_view, pan_zoom_tree, spawn_tree, validate_tree};
+pub(crate) use tree_view::{
+    MenuRoot, cleanup_tree_view, on_knowledge_card_activated, pan_zoom_tree,
+    refresh_knowledge_cards, spawn_tree, validate_tree,
+};
 
 pub struct MenusPlugin;
 
@@ -38,9 +41,17 @@ impl Plugin for MenusPlugin {
             .init_resource::<SocialData>()
             .init_resource::<MenuBgCache>()
             .add_systems(Startup, (load_data, menu_bg::load_bg_source))
+            .add_observer(on_knowledge_card_activated)
             .add_systems(
                 Update,
-                (toggle_menus, cleanup_tree_view, pan_zoom_tree, menu_bg::update_menu_background).chain(),
+                (
+                    toggle_menus,
+                    cleanup_tree_view,
+                    pan_zoom_tree,
+                    refresh_knowledge_cards,
+                    menu_bg::update_menu_background,
+                )
+                    .chain(),
             );
     }
 }

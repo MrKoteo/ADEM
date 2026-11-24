@@ -559,6 +559,7 @@ pub(crate) fn drop_entity_loot(world: &mut World, entity_id: u64, tick: u64) {
 pub(crate) fn kill_entity(world: &mut World, entity_id: u64, tick: u64) {
     drop_entity_loot(world, entity_id, tick);
     world.entities.remove(entity_id);
+    world.settlements.remove_member_everywhere(entity_id);
 }
 
 /// Автоподбор воткнутых копьёв: всё, что ближе `SPEAR_PICKUP_RADIUS_TILES`

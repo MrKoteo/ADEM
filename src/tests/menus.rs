@@ -8,6 +8,7 @@ fn entry(id: &str, requires: &[&str]) -> TechEntry {
         id: id.to_string(),
         name: id.to_string(),
         era: "stone_age".to_string(),
+        study_hours: 1.0,
         requires: requires.iter().map(|r| r.to_string()).collect(),
         description: String::new(),
     }
@@ -25,11 +26,13 @@ fn era_separators_between_columns() {
         vec![pitch - GAP_X * 0.5, 2.0 * pitch - GAP_X * 0.5]
     );
 
-    // Реальная раскладка технологий: 10/10/10/10 колонок.
+    // Реальная раскладка технологий: границы считаются по числу карт эпох.
     let tech = era_separator_positions(&TECH_ERA_COLUMNS);
-    assert_eq!(tech.len(), 3);
-    assert_eq!(tech[0], 10.0 * pitch - GAP_X * 0.5);
-    assert_eq!(tech[2], 30.0 * pitch - GAP_X * 0.5);
+    assert_eq!(tech.len(), TECH_ERA_COLUMNS.len() - 1);
+    let first = TECH_ERA_COLUMNS[0] as f32 * pitch - GAP_X * 0.5;
+    let third = TECH_ERA_COLUMNS[..3].iter().sum::<usize>() as f32 * pitch - GAP_X * 0.5;
+    assert_eq!(tech[0], first);
+    assert_eq!(tech[2], third);
 
     // Одна эпоха — разделителей нет.
     assert!(era_separator_positions(&[12]).is_empty());
